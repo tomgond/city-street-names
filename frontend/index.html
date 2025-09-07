@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="he" dir="rtl">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/svg+xml" href="/vite.svg" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Street Name Similarity</title>
+    <!-- D3 -->
+    <script src="https://d3js.org/d3.v7.min.js"></script>
+    <!-- Fuse.js -->
+    <script src="https://cdn.jsdelivr.net/npm/fuse.js/dist/fuse.basic.min.js"></script>
+    <!-- Leaflet CSS -->
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <!-- Leaflet JS -->
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  </head>
+  <body>
+    <div id="app">
+      <header>
+        <h1>Israeli Street Name Similarity Analysis</h1>
+        <nav>
+          <a href="#home">Home</a>
+          <a href="#city">Cities</a>
+          <a href="#street">Streets</a>
+        </nav>
+      </header>
+      <main>
+        <div id="home-view">
+          <h2>Home</h2>
+          <p>Visualization of city similarities based on street names.</p>
+        </div>
+        <div id="city-view" style="display: none;">
+          <h2>City Analysis</h2>
+          <p>Compare cities here.</p>
+        </div>
+        <div id="street-view" style="display: none;">
+          <h2>Street Search</h2>
+          <p>Search for streets.</p>
+        </div>
+      </main>
+    </div>
+    <script type="module" src="/src/main.js"></script>
+  </body>
+</html>
