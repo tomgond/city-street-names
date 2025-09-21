@@ -41,6 +41,14 @@
    * `name_index.json` (street → cities, variants).
    * `name_meta.json` (counts, rarity).
 
+### Python Environment
+
+Install the processing dependency before running `src/aggregation/build_data.py`:
+
+```bash
+python3 -m pip install networkx
+```
+
 ---
 
 ## Frontend (JS + D3 + Fuse.js)

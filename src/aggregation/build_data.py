@@ -1,4 +1,4 @@
-#!/usr/bin/env python2
+#!/usr/bin/env python3
 """
 Processing Pipeline for City Street Names Analysis
 
@@ -9,11 +9,14 @@ based on shared street names.
 import csv
 import json
 import logging
-from collections import defaultdict
-from itertools import combinations
-import time
 import math
 import os
+import shutil
+import time
+from collections import Counter, defaultdict
+from pathlib import Path
+
+import networkx as nx
 
 # Set up logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -22,40 +25,63 @@ logger = logging.getLogger(__name__)
 class StreetProcessingPipeline:
     def __init__(self):
         self.cities_data = defaultdict(dict)
+        self.city_street_meta = defaultdict(dict)
         self.street_to_cities = defaultdict(set)
         self.norm_keys = {}
+        self.norm_display_counts = defaultdict(Counter)
         self.rarity_weights = {}
         self.city_names = {}
+        self.city_communities = {}
 
     def load_data(self, csv_path):
         """Load street data from CSV file."""
         logger.info("Loading data from {}".format(csv_path))
         start_time = time.time()
 
-        with open(csv_path, 'r') as f:
+        with open(csv_path, 'r', encoding='utf-8') as f:
             reader = csv.DictReader(f)
             for row in reader:
                 city_code = int(row['city_code'])
                 city_name = row['city_name']
                 norm_key = row['norm_key']
                 norm_display = row['norm_display']
+                street_name = (row.get('street_name') or '').strip()
+                street_code = (row.get('street_code') or '').strip()
 
-                # Store city name
+                display_value = street_name or norm_display
+
                 if city_code not in self.city_names:
                     self.city_names[city_code] = city_name
 
-                # Store normalized key and display name
-                if norm_key not in self.norm_keys:
-                    self.norm_keys[norm_key] = norm_display
-
-                # Add to per-city set
                 self.cities_data[city_code][norm_key] = norm_display
 
-                # Add to inverted index
+                street_meta = self.city_street_meta[city_code].get(norm_key)
+                if street_meta is None:
+                    self.city_street_meta[city_code][norm_key] = {
+                        'display': display_value,
+                        'norm_display': norm_display,
+                        'street_code': street_code
+                    }
+                else:
+                    if street_meta['display'] == street_meta['norm_display'] and display_value != norm_display:
+                        street_meta['display'] = display_value
+                    if not street_meta.get('street_code') and street_code:
+                        street_meta['street_code'] = street_code
+
+                self.norm_display_counts[norm_key][display_value] += 1
+
+                if norm_key not in self.norm_keys:
+                    self.norm_keys[norm_key] = display_value
+
                 self.street_to_cities[norm_key].add(city_code)
 
+        for norm_key, counter in self.norm_display_counts.items():
+            if counter:
+                preferred, _ = counter.most_common(1)[0]
+                self.norm_keys[norm_key] = preferred
+
         load_time = time.time() - start_time
-        logger.info(".2f")
+        logger.info("Loaded data in %.2fs", load_time)
         return self
 
     def compute_rarity_weights(self):
@@ -68,7 +94,7 @@ class StreetProcessingPipeline:
             self.rarity_weights[norm_key] = 1.0 / math.log(1 + df)
 
         compute_time = time.time() - start_time
-        logger.info(".2f")
+        logger.info("Computed rarity weights in %.2fs", compute_time)
         return self
 
     def calculate_jaccard_similarity(self, city_a_streets, city_b_streets):
@@ -84,18 +110,13 @@ class StreetProcessingPipeline:
     def calculate_weighted_jaccard_similarity(self, city_a_streets, city_b_streets):
         """Calculate weighted Jaccard similarity between two cities' street sets."""
         intersection = city_a_streets & city_b_streets
+        union = city_a_streets | city_b_streets
 
-        union_a = city_a_streets | city_b_streets
-        union_b = city_a_streets | city_b_streets
-
-        if not (union_a | union_b):
+        if not union:
             return 0.0
 
-        # Weighted intersection
-        intersection_weight = sum(self.rarity_weights[street] for street in intersection)
-
-        # Weighted union
-        union_weight = sum(self.rarity_weights[street] for street in (union_a | union_b))
+        intersection_weight = sum(self.rarity_weights.get(street, 0.0) for street in intersection)
+        union_weight = sum(self.rarity_weights.get(street, 0.0) for street in union)
 
         return intersection_weight / union_weight if union_weight > 0 else 0.0
 
@@ -106,7 +127,7 @@ class StreetProcessingPipeline:
         # Sort by rarity weight descending
         sorted_streets = sorted(
             intersection,
-            key=lambda s: self.rarity_weights[s],
+            key=lambda s: self.rarity_weights.get(s, 0.0),
             reverse=True
         )
 
@@ -114,10 +135,99 @@ class StreetProcessingPipeline:
             {
                 'norm_key': street,
                 'display_name': self.norm_keys[street],
-                'rarity_weight': self.rarity_weights[street]
+                'rarity_weight': self.rarity_weights.get(street, 0.0)
             }
             for street in sorted_streets[:top_n]
         ]
+
+    def detect_communities(self, similarity_top, metric='weightedJaccard', min_weight=0.0):
+        """Detect communities using NetworkX community detection algorithms."""
+        logger.info("Detecting city communities using NetworkX (metric=%s)", metric)
+        start_time = time.time()
+
+        graph = nx.Graph()
+        for city_code in self.city_names:
+            graph.add_node(str(city_code))
+
+        metric_key = metric or 'weightedJaccard'
+        valid_metrics = {'weightedJaccard', 'jaccard', 'weighted_jaccard'}
+        if metric_key not in valid_metrics:
+            logger.warning(
+                "Unsupported community metric '%s'; defaulting to weightedJaccard",
+                metric_key
+            )
+            metric_key = 'weightedJaccard'
+
+        if metric_key == 'weighted_jaccard':
+            metric_key = 'weightedJaccard'
+
+        edge_weights = defaultdict(float)
+        for source, neighbors in (similarity_top or {}).items():
+            source_id = str(source)
+            if not neighbors:
+                continue
+            for entry in neighbors:
+                target_raw = entry.get('city')
+                if target_raw is None:
+                    continue
+                target_id = str(target_raw)
+                if target_id == source_id:
+                    continue
+                weight = float(entry.get(metric_key) or 0.0)
+                if weight <= min_weight:
+                    continue
+                edge_key = tuple(sorted((source_id, target_id)))
+                if weight > edge_weights[edge_key]:
+                    edge_weights[edge_key] = weight
+
+        for (node_a, node_b), weight in edge_weights.items():
+            graph.add_edge(node_a, node_b, weight=weight)
+
+        if graph.number_of_nodes() == 0:
+            self.city_communities = {}
+            logger.warning("No cities available for community detection")
+            return self
+
+        if graph.number_of_edges() == 0:
+            logger.warning("Graph has no edges; assigning each city to its own community")
+            community_groups = [[node] for node in sorted(graph.nodes)]
+        else:
+            try:
+                communities_iter = nx.algorithms.community.louvain_communities(
+                    graph,
+                    weight='weight',
+                    seed=42
+                )
+                community_groups = [sorted(map(str, group)) for group in communities_iter if group]
+            except AttributeError:
+                from networkx.algorithms import community as nx_community
+
+                communities_iter = nx_community.greedy_modularity_communities(
+                    graph,
+                    weight='weight'
+                )
+                community_groups = [sorted(map(str, group)) for group in communities_iter if group]
+
+            assigned_nodes = {node for group in community_groups for node in group}
+            unassigned = sorted(set(graph.nodes) - assigned_nodes)
+            community_groups.extend([[node] for node in unassigned])
+
+        community_groups.sort(key=lambda group: (-len(group), group[0]))
+
+        community_lookup = {}
+        for community_id, members in enumerate(community_groups):
+            for member in members:
+                community_lookup[member] = community_id
+
+        self.city_communities = community_lookup
+        elapsed = time.time() - start_time
+        logger.info(
+            "Detected %d communities in %.2fs",
+            len(community_groups),
+            elapsed
+        )
+
+        return self
 
     def calculate_city_similarities(self):
         """Calculate similarities between all city pairs."""
@@ -125,71 +235,181 @@ class StreetProcessingPipeline:
         start_time = time.time()
 
         city_codes = list(self.cities_data.keys())
-        similarities = defaultdict(dict)
+        total_combinations = len(city_codes) * (len(city_codes) - 1) // 2
 
-        total_pairs = len(city_codes) * (len(city_codes) - 1) // 2
+        base_pairs = []
         processed = 0
 
         for i, city_a in enumerate(city_codes):
-            for j, city_b in enumerate(city_codes[i+1:], i+1):
-                city_a_streets = set(self.cities_data[city_a].keys())
+            city_a_streets = set(self.cities_data[city_a].keys())
+            for city_b in city_codes[i + 1:]:
                 city_b_streets = set(self.cities_data[city_b].keys())
+
+                intersection = city_a_streets & city_b_streets
+                if not intersection:
+                    processed += 1
+                    continue
+
+                union = city_a_streets | city_b_streets
 
                 jaccard = self.calculate_jaccard_similarity(city_a_streets, city_b_streets)
                 weighted_jaccard = self.calculate_weighted_jaccard_similarity(city_a_streets, city_b_streets)
                 top_streets = self.get_top_shared_streets(city_a_streets, city_b_streets, top_n=10)
 
-                similarities["{}_{}".format(city_a, city_b)] = {
+                base_pairs.append({
                     'city_a': city_a,
                     'city_b': city_b,
                     'jaccard': round(jaccard, 4),
                     'weighted_jaccard': round(weighted_jaccard, 4),
-                    'intersection_size': len(city_a_streets & city_b_streets),
-                    'union_size': len(city_a_streets | city_b_streets),
-                    'top_shared_streets': top_streets
-                }
+                    'intersection_size': len(intersection),
+                    'union_size': len(union),
+                    'top_shared_streets': top_streets,
+                })
 
                 processed += 1
                 if processed % 10000 == 0:
-                    logger.info("Processed {}/{} pairs".format(processed, total_pairs))
+                    logger.info("Processed %d/%d city combinations", processed, total_combinations)
 
-        calc_time = time.time() - start_time
-        logger.info(".2f")
+        similarities = {}
+        for pair in base_pairs:
+            city_a = pair['city_a']
+            city_b = pair['city_b']
 
-        return similarities
-
-    def export_data(self, output_dir, similarities=None):
-        """Export processed data to JSON files."""
-        logger.info("Exporting data to {}".format(output_dir))
-
-        # Export cities data
-        cities_output = dict()
-        for city_code, streets in self.cities_data.items():
-            cities_output[city_code] = {
-                'city_name': self.city_names.get(city_code, ''),
-                'street_count': len(streets),
-                'normalized_keys': list(streets.keys())
+            shared_payload = {
+                'jaccard': pair['jaccard'],
+                'weighted_jaccard': pair['weighted_jaccard'],
+                'intersection_size': pair['intersection_size'],
+                'union_size': pair['union_size'],
+                'top_shared_streets': list(pair['top_shared_streets']),
             }
 
-        with open(os.path.join(output_dir, 'cities.json'), 'w') as f:
+            key_ab = f"{city_a}_{city_b}"
+            key_ba = f"{city_b}_{city_a}"
+
+            similarities[key_ab] = {
+                **shared_payload,
+                'city_a': city_a,
+                'city_b': city_b,
+            }
+
+            similarities[key_ba] = {
+                **shared_payload,
+                'city_a': city_b,
+                'city_b': city_a,
+            }
+
+        calc_time = time.time() - start_time
+        logger.info(
+            "Calculated %d non-zero similarity pairs (out of %d combinations) in %.2fs",
+            len(base_pairs),
+            total_combinations,
+            calc_time,
+        )
+
+        return similarities, base_pairs
+
+    def export_data(self, output_dir, similarities=None, top_similarities=None):
+        """Export processed data to JSON files."""
+        logger.info("Exporting data to %s", output_dir)
+        os.makedirs(output_dir, exist_ok=True)
+
+        # Prepare per-city records
+        cities_output = []
+        for city_code, streets in self.cities_data.items():
+            city_meta = self.city_street_meta.get(city_code, {})
+            sorted_keys = sorted(streets.keys(), key=lambda key: city_meta.get(key, {}).get('display', streets[key]))
+            city_entry = {
+                'id': str(city_code),
+                'name': self.city_names.get(city_code, ''),
+                'streetCount': len(streets),
+                'streets': []
+            }
+
+            community = self.city_communities.get(str(city_code))
+            if community is not None:
+                city_entry['community'] = community
+
+            for key in sorted_keys:
+                info = city_meta.get(key, {})
+                city_entry['streets'].append({
+                    'key': key,
+                    'display': info.get('display', self.norm_keys.get(key, key)),
+                    'normDisplay': info.get('norm_display', streets[key]),
+                    'streetCode': info.get('street_code', ''),
+                    'rarityWeight': round(self.rarity_weights.get(key, 0.0), 6)
+                })
+
+            cities_output.append(city_entry)
+
+        cities_output.sort(key=lambda city: city['name'])
+
+        with open(os.path.join(output_dir, 'cities.json'), 'w', encoding='utf-8') as f:
             json.dump(cities_output, f, indent=2, ensure_ascii=False)
 
-        # Export street to cities index
-        street_index_output = dict()
-        for street, cities in self.street_to_cities.items():
-            street_index_output[street] = list(cities)
+        # Build an index of streets to cities with metadata
+        street_index_output = {}
+        for street_key, cities in self.street_to_cities.items():
+            sorted_cities = sorted(cities, key=lambda code: self.city_names.get(code, ''))
+            street_index_output[street_key] = {
+                'display': self.norm_keys.get(street_key, street_key),
+                'rarityWeight': round(self.rarity_weights.get(street_key, 0.0), 6),
+                'cityCount': len(sorted_cities),
+                'cities': []
+            }
 
-        with open(os.path.join(output_dir, 'street_index.json'), 'w') as f:
+            for code in sorted_cities:
+                city_info = self.city_street_meta.get(code, {}).get(street_key, {})
+                street_index_output[street_key]['cities'].append({
+                    'id': str(code),
+                    'name': self.city_names.get(code, ''),
+                    'streetCount': len(self.cities_data[code]),
+                    'streetDisplay': city_info.get('display', self.norm_keys.get(street_key, street_key)),
+                    'normDisplay': city_info.get('norm_display')
+                })
+
+        with open(os.path.join(output_dir, 'street_index.json'), 'w', encoding='utf-8') as f:
             json.dump(street_index_output, f, indent=2, ensure_ascii=False)
 
-        # Export rarity weights
-        with open(os.path.join(output_dir, 'rarity_weights.json'), 'w') as f:
+        # Export rarity weights for analytics that still rely on the standalone file
+        with open(os.path.join(output_dir, 'rarity_weights.json'), 'w', encoding='utf-8') as f:
             json.dump(self.rarity_weights, f, indent=2, ensure_ascii=False)
 
-        # Export city similarities (if provided)
+        # Export similarity top lists for light-weight analytics
+        if top_similarities is not None:
+            with open(os.path.join(output_dir, 'similarity_top.json'), 'w', encoding='utf-8') as f:
+                json.dump(top_similarities, f, indent=2, ensure_ascii=False)
+
+        # Optionally export full similarity matrix (large)
         if similarities:
-            with open(os.path.join(output_dir, 'city_similarities.json'), 'w') as f:
+            with open(os.path.join(output_dir, 'city_similarities.json'), 'w', encoding='utf-8') as f:
                 json.dump(similarities, f, indent=2, ensure_ascii=False)
+
+        self._mirror_outputs(output_dir, top_similarities is not None)
+
+    def _mirror_outputs(self, output_dir, has_similarity_top):
+        """Copy freshly generated JSON files into the frontend public folder."""
+        public_root = Path('frontend') / 'public' / 'data' / 'processed'
+        try:
+            public_root.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            logger.warning('Unable to prepare frontend data folder: %s', exc)
+            return
+
+        output_path = Path(output_dir)
+        filenames = ['cities.json', 'street_index.json', 'rarity_weights.json']
+        if has_similarity_top:
+            filenames.append('similarity_top.json')
+
+        for filename in filenames:
+            source = output_path / filename
+            if not source.exists():
+                continue
+            target = public_root / filename
+            try:
+                shutil.copy2(source, target)
+            except OSError as exc:
+                logger.warning('Failed to copy %s to public folder: %s', filename, exc)
+
 
 def main():
     """Main processing function."""
@@ -206,49 +426,46 @@ def main():
     pipeline.compute_rarity_weights()
 
     # Calculate similarities
-    similarities = pipeline.calculate_city_similarities()
+    similarities, base_pairs = pipeline.calculate_city_similarities()
 
     # Export results
     output_dir = "data/processed"
 
     # Compute top similarities per city
     from collections import defaultdict
-    import math
 
-    top_similarities = defaultdict(dict)
+    threshold = 0.00001
+    top_similarities = defaultdict(list)
 
-    for pair_key, pair_data in similarities.items():
+    def _append_similarity(source, target, pair):
+        key = str(source)
+        top_similarities[key].append({
+            'city': str(target),
+            'cityName': pipeline.city_names.get(target, ''),
+            'weightedJaccard': round(pair['weighted_jaccard'], 4),
+            'jaccard': round(pair['jaccard'], 4),
+            'intersectionSize': pair['intersection_size'],
+            'unionSize': pair['union_size'],
+            'topSharedStreets': pair['top_shared_streets'][:5]
+        })
+
+    for pair_data in base_pairs:
         city_a = pair_data['city_a']
         city_b = pair_data['city_b']
         weighted_jaccard = pair_data['weighted_jaccard']
+        jaccard_value = pair_data['jaccard']
+        if weighted_jaccard <= threshold and jaccard_value <= threshold:
+            continue
+        _append_similarity(city_a, city_b, pair_data)
+        _append_similarity(city_b, city_a, pair_data)
 
-        # Add to city_a's top
-        if weighted_jaccard > 0.00001:  # Some threshold to exclude zero
-            top_similarities[city_a][city_b] = {
-                'weighted_jaccard': weighted_jaccard,
-                'jaccard': pair_data['jaccard'],
-                'top_shared_streets': pair_data['top_shared_streets'][:5]  # top 5 streets
-            }
-
-        # Add to city_b's top (symmetric)
-        if weighted_jaccard > 0.00001:
-            top_similarities[city_b][city_a] = {
-                'weighted_jaccard': weighted_jaccard,
-                'jaccard': pair_data['jaccard'],
-                'top_shared_streets': pair_data['top_shared_streets'][:5]
-            }
-
-    # Sort and take top 10 for each city
     similarity_top = {}
     for city_code, sims in top_similarities.items():
-        sorted_sims = sorted(sims.items(), key=lambda x: x[1]['weighted_jaccard'], reverse=True)[:10]
-        similarity_top[city_code] = {k: v for k, v in sorted_sims}
+        sims.sort(key=lambda item: item['weightedJaccard'], reverse=True)
+        similarity_top[str(city_code)] = sims[:10]
 
-    # Export top similarities
-    with open(os.path.join(output_dir, 'similarity_top.json'), 'w') as f:
-        json.dump(similarity_top, f, indent=2, ensure_ascii=False)
-
-    pipeline.export_data(output_dir, similarities)
+    pipeline.detect_communities(similarity_top)
+    pipeline.export_data(output_dir, similarities, similarity_top)
 
     logger.info("Processing complete!")
 
