@@ -258,6 +258,35 @@ function resolveStreetKey(streetKey) {
   return '';
 }
 
+function getSimilarityEntry(sourceId, targetId) {
+  if (!sourceId || !targetId) return null;
+  const sourceMap = state.similarityLookup.get(sourceId);
+  if (sourceMap && sourceMap.has(targetId)) {
+    return sourceMap.get(targetId) || null;
+  }
+  const reverseMap = state.similarityLookup.get(targetId);
+  if (reverseMap && reverseMap.has(sourceId)) {
+    const reverse = reverseMap.get(sourceId);
+    if (!reverse) return null;
+    return {
+      ...reverse,
+      city: targetId,
+      cityName: state.cityMap.get(targetId)?.name || reverse.cityName || targetId
+    };
+  }
+  return null;
+}
+
+function getSimilarityMetric(sourceId, targetId, metric = 'weightedJaccard') {
+  const entry = getSimilarityEntry(sourceId, targetId);
+  if (!entry) return 0;
+  const value = entry?.[metric];
+  if (typeof value === 'number') return value;
+  const numeric = Number(value);
+  return Number.isFinite(numeric) ? numeric : 0;
+}
+
+
 function applyDefaultSelections() {
   const defaultCityId = resolveDefaultCityId();
   if (defaultCityId) {
@@ -521,7 +550,7 @@ async function loadData() {
   console.time('[data] total');
   toggleLoading(true, 'טוען נתוני בסיס...');
   try {
-    const base = '/data/processed';
+    const base = `${import.meta.env.BASE_URL}data/processed`;
     const fetchJson = async (name) => {
       console.info(`[data] fetching ${name}`);
       const response = await fetch(`${base}/${name}`, { cache: 'no-store' });
@@ -560,12 +589,27 @@ async function loadData() {
     state.graphLayouts.clear();
 
     state.similarityTop = new Map(Object.entries(similarityTop || {}));
-    state.similarityLookup = new Map(
-      Array.from(state.similarityTop.entries()).map(([cityId, list]) => [
-        cityId,
-        new Map((list || []).map(item => [item.city, item]))
-      ])
-    );
+    const similarityLookup = new Map();
+    state.similarityTop.forEach((list, cityId) => {
+      const directMap = similarityLookup.get(cityId) || new Map();
+      (list || []).forEach(item => {
+        if (!item || !item.city) return;
+        directMap.set(item.city, item);
+
+        const reverseKey = item.city;
+        const reverseMap = similarityLookup.get(reverseKey) || new Map();
+        if (!reverseMap.has(cityId)) {
+          reverseMap.set(cityId, {
+            ...item,
+            city: cityId,
+            cityName: state.cityMap.get(cityId)?.name || item.cityName || cityId
+          });
+        }
+        similarityLookup.set(reverseKey, reverseMap);
+      });
+      similarityLookup.set(cityId, directMap);
+    });
+    state.similarityLookup = similarityLookup;
 
     state.streetIndex = new Map(Object.entries(streetIndex || {}));
     state.streetKeyCache.clear();
@@ -1184,7 +1228,7 @@ function renderHeatmap(force = false) {
   const data = [];
   cities.forEach((rowCity, rowIndex) => {
     cities.forEach((colCity, colIndex) => {
-      const similarity = state.similarityLookup.get(rowCity.id)?.get(colCity.id)?.weightedJaccard || 0;
+      const similarity = getSimilarityMetric(rowCity.id, colCity.id, 'weightedJaccard');
       data.push({
         x: colIndex,
         y: rowIndex,
@@ -1341,15 +1385,15 @@ function renderCity(primaryId, secondaryId = '') {
   `;
 
   renderCityChart(city, similarity);
-  renderCitySimilarButtons(primaryId, similarity);
-  const defaultPartner = secondaryId || (similarity[0]?.city ?? '');
-  if (defaultPartner) {
-    setCityInputValue(elements.city.secondarySelect, elements.city.secondarySuggestions, defaultPartner);
+  const selectedPartnerId = secondaryId || (similarity[0]?.city ?? '');
+  renderCitySimilarButtons(primaryId, similarity, selectedPartnerId);
+  if (selectedPartnerId) {
+    setCityInputValue(elements.city.secondarySelect, elements.city.secondarySuggestions, selectedPartnerId);
   } else {
     setCityInputValue(elements.city.secondarySelect, elements.city.secondarySuggestions, '');
   }
-  renderSharedStreets(primaryId, defaultPartner || null);
-  renderOverlap(primaryId, secondaryId || getSelectedCityId(elements.city.secondarySelect) || '');
+  renderSharedStreets(primaryId, selectedPartnerId || null);
+  renderOverlap(primaryId, selectedPartnerId || '');
 }
 
 function renderCityChart(city, similarity) {
@@ -1429,7 +1473,7 @@ function renderCityChart(city, similarity) {
     .style('fill', '#e2e8f0');
 }
 
-function renderCitySimilarButtons(primaryId, similarity) {
+function renderCitySimilarButtons(primaryId, similarity, activeCityId = '') {
   const container = elements.city.similarList;
   if (!container) return;
   container.innerHTML = '';
@@ -1438,46 +1482,180 @@ function renderCitySimilarButtons(primaryId, similarity) {
     return;
   }
 
+  const normalizedActiveId = activeCityId ? String(activeCityId) : '';
   similarity.slice(0, 12).forEach(item => {
     const button = document.createElement('button');
     button.type = 'button';
-    button.textContent = `${state.cityMap.get(item.city)?.name || item.city} (${item.weightedJaccard.toFixed(3)})`;
+    button.dataset.cityId = item.city;
+    const cityLabel = state.cityMap.get(item.city)?.name || item.city;
+    button.textContent = cityLabel + ' (' + item.weightedJaccard.toFixed(3) + ')';
     button.addEventListener('click', () => {
-      container.querySelectorAll('button').forEach(btn => btn.classList.remove('active'));
-      button.classList.add('active');
+      setActiveSimilarCity(item.city);
       setCityInputValue(elements.city.secondarySelect, elements.city.secondarySuggestions, item.city);
       renderSharedStreets(primaryId, item.city);
       renderOverlap(primaryId, item.city);
-      window.location.hash = `#/city/${primaryId}/${item.city}`;
+      window.location.hash = '#/city/' + primaryId + '/' + item.city;
     });
     container.appendChild(button);
   });
-  const firstButton = container.querySelector('button');
-  if (firstButton) firstButton.classList.add('active');
+
+  setActiveSimilarCity(normalizedActiveId);
+}
+
+function setActiveSimilarCity(partnerId) {
+  const container = elements.city.similarList;
+  if (!container) return;
+  const buttons = Array.from(container.querySelectorAll('button'));
+  if (!buttons.length) return;
+
+  const normalized = partnerId ? String(partnerId) : '';
+  let matched = false;
+
+  buttons.forEach(button => {
+    const isMatch = normalized && button.dataset.cityId === normalized;
+    button.classList.toggle('active', Boolean(isMatch));
+    if (isMatch) {
+      matched = true;
+    }
+  });
+
+  if (!normalized) {
+    buttons.forEach(button => button.classList.remove('active'));
+    buttons[0].classList.add('active');
+    return;
+  }
+
+  if (!matched) {
+    buttons.forEach(button => button.classList.remove('active'));
+  }
+}
+
+function computeSharedStreetHighlights(primaryId, partnerId, limit = 20) {
+  if (!primaryId || !partnerId) return null;
+  const primary = state.cityMap.get(primaryId);
+  const partner = state.cityMap.get(partnerId);
+  if (!primary || !partner) return null;
+
+  const partnerStreets = new Map((partner.streets || []).map(street => [street.key, street]));
+  const overlaps = [];
+
+  const rarityFor = street => {
+    if (street && typeof street.rarityWeight === 'number' && Number.isFinite(street.rarityWeight)) {
+      return street.rarityWeight;
+    }
+    const key = street?.key;
+    const fallback = key ? state.rarityWeights[key] : undefined;
+    return typeof fallback === 'number' && Number.isFinite(fallback) ? fallback : 0;
+  };
+
+  (primary.streets || []).forEach(street => {
+    if (!street || !street.key) return;
+    const partnerStreet = partnerStreets.get(street.key);
+    if (!partnerStreet) return;
+    const rarity = Math.max(rarityFor(street), rarityFor(partnerStreet));
+    const display =
+      street.display ||
+      partnerStreet.display ||
+      street.normDisplay ||
+      partnerStreet.normDisplay ||
+      street.key;
+    overlaps.push({
+      norm_key: street.key,
+      display_name: display,
+      rarity_weight: rarity
+    });
+  });
+
+  if (!overlaps.length) {
+    return null;
+  }
+
+  overlaps.sort((a, b) => b.rarity_weight - a.rarity_weight);
+
+  const primaryKeys = new Set((primary.streets || []).map(item => item.key));
+  const partnerKeys = new Set((partner.streets || []).map(item => item.key));
+  const intersectionSize = overlaps.length;
+  const unionSize = primaryKeys.size + partnerKeys.size - intersectionSize;
+
+  return {
+    city: partnerId,
+    cityName: partner.name,
+    weightedJaccard: getSimilarityMetric(primaryId, partnerId, 'weightedJaccard'),
+    jaccard: unionSize > 0 ? intersectionSize / unionSize : 0,
+    intersectionSize,
+    unionSize,
+    topSharedStreets: overlaps.slice(0, limit)
+  };
 }
 
 function renderSharedStreets(primaryId, partnerId) {
   const container = elements.city.sharedList;
   if (!container) return;
   container.innerHTML = '';
-  if (!partnerId) {
+
+  const normalizedPartner = partnerId ? String(partnerId) : '';
+  setActiveSimilarCity(normalizedPartner);
+
+  if (!normalizedPartner) {
     container.innerHTML = '<p>בחרו עיר להשוואה כדי לראות רחובות משותפים.</p>';
     return;
   }
-  const entry = state.similarityLookup.get(primaryId)?.get(partnerId);
-  if (!entry) {
+
+  let entry = getSimilarityEntry(primaryId, normalizedPartner);
+  if (!entry || !Array.isArray(entry.topSharedStreets) || !entry.topSharedStreets.length) {
+    const fallback = computeSharedStreetHighlights(primaryId, normalizedPartner);
+    if (fallback) {
+      entry = entry ? { ...entry, topSharedStreets: fallback.topSharedStreets } : fallback;
+
+      let primaryMap = state.similarityLookup.get(primaryId);
+      if (!primaryMap) {
+        primaryMap = new Map();
+        state.similarityLookup.set(primaryId, primaryMap);
+      }
+      primaryMap.set(normalizedPartner, entry);
+
+      let partnerMap = state.similarityLookup.get(normalizedPartner);
+      if (!partnerMap) {
+        partnerMap = new Map();
+        state.similarityLookup.set(normalizedPartner, partnerMap);
+      }
+      if (!partnerMap.has(primaryId)) {
+        partnerMap.set(primaryId, {
+          ...entry,
+          city: primaryId,
+          cityName: state.cityMap.get(primaryId)?.name || entry.cityName || primaryId
+        });
+      }
+    }
+  }
+
+  if (!entry || !Array.isArray(entry.topSharedStreets) || !entry.topSharedStreets.length) {
     container.innerHTML = '<p>לא נמצאו רחובות משותפים משמעותיים בין צמד הערים.</p>';
     return;
   }
 
   const list = document.createElement('ul');
   entry.topSharedStreets.forEach(street => {
+    if (!street) return;
+    const displayName =
+      street.display_name ||
+      street.display ||
+      street.normDisplay ||
+      street.norm_key ||
+      street.key;
+    const rarityValue = Number(street.rarity_weight);
+    const rarity = Number.isFinite(rarityValue) ? rarityValue : 0;
+    const rarityText = rarity.toFixed(2);
     const li = document.createElement('li');
-    li.innerHTML = `
-      <span>${street.display_name}</span>
-      <small>משקל נדירות: ${street.rarity_weight.toFixed(2)}</small>
-    `;
-    li.addEventListener('click', () => navigateToStreet(street.norm_key));
+    const template = [
+      '<span>' + displayName + '</span>',
+      '<small>משקל נדירות: ' + rarityText + '</small>'
+    ].join('');
+    li.innerHTML = template;
+    const targetKey = street.norm_key || street.key || '';
+    if (targetKey) {
+      li.addEventListener('click', () => navigateToStreet(targetKey));
+    }
     list.appendChild(li);
   });
   container.appendChild(list);
@@ -1888,6 +2066,7 @@ function init() {
 }
 
 init();
+
 
 
 

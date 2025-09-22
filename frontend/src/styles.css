@@ -438,7 +438,6 @@ button:disabled {
 .network-graph .graph-node.is-focused {
   stroke: rgba(34, 211, 238, 0.85);
   stroke-width: 2.6;
-  transform: scale(1.06);
 }
 
 .network-graph .graph-link {
