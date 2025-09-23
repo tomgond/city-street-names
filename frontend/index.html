@@ -21,6 +21,7 @@
             <a href="#/home" data-view="home" class="nav-link active">סקירה כללית</a>
             <a href="#/city" data-view="city" class="nav-link">מבט עיר</a>
             <a href="#/street" data-view="street" class="nav-link">מבט רחוב</a>
+            <a href="#/dedications" data-view="dedications" class="nav-link">שרשראות ערים</a>
             <a href="#/graph" data-view="graph" class="nav-link">רשת הדמיון</a>
           </nav>
         </aside>
@@ -133,6 +134,36 @@
               </div>
               <div id="graph-view-canvas" class="viz-canvas network full"></div>
             </section>
+          </section>
+
+          <section id="dedications-view" class="view" data-view="dedications" hidden>
+            <div class="card chain-intro">
+              <h2>רשת הערים המונצחות ברחובות</h2>
+              <p>
+                בכל פעם שעיר מעניקה שם של עיר אחרת לרחוב, נוצר חיבור מיוחד ביניהן. הסעיף הבא מציג גרף מכוון שבו קשת מעיר מקור לעיר היעד מציינת שיש ברחובותיה שם של העיר השנייה. עובי הקשת משקף כמה שמות רחובות שונים נמצאו.
+              </p>
+            </div>
+
+            <section class="card chain-summary" id="city-chain-summary"></section>
+
+            <section class="viz-card card">
+              <div class="viz-header">
+                <h3>גרף ההנצחות בין ערים</h3>
+                <p>הקשתות המוארות מדגישות את המסלול הארוך ביותר ואת המעגל הארוך ביותר שנמצאו.</p>
+              </div>
+              <div id="city-chain-graph" class="viz-canvas network chain"></div>
+            </section>
+
+            <div class="chain-stats-grid">
+              <section class="card chain-path">
+                <h3>המסלול הארוך ביותר</h3>
+                <div id="city-chain-path" class="chain-sequence"></div>
+              </section>
+              <section class="card chain-cycle">
+                <h3>המעגל הארוך ביותר</h3>
+                <div id="city-chain-cycle" class="chain-sequence"></div>
+              </section>
+            </div>
           </section>
         </main>
       </div>

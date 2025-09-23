@@ -158,6 +158,10 @@ a:hover {
   min-height: clamp(540px, 68vh, 780px);
 }
 
+.viz-canvas.network.chain {
+  min-height: clamp(520px, 70vh, 780px);
+}
+
 #graph-view-canvas {
   width: 100%;
   height: 100%;
@@ -227,6 +231,37 @@ a:hover {
 .top-cities-list span.count {
   color: var(--accent);
   font-weight: 600;
+}
+
+.chain-summary {
+  display: grid;
+  gap: 1rem;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+}
+
+.chain-summary .summary-block {
+  background: rgba(148, 163, 255, 0.08);
+  border-radius: 16px;
+  padding: 1rem 1.2rem;
+  border: 1px solid rgba(148, 163, 255, 0.12);
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+.chain-summary .summary-label {
+  font-size: 0.85rem;
+  color: var(--muted);
+}
+
+.chain-summary .summary-value {
+  font-size: 1.7rem;
+  font-weight: 700;
+}
+
+.chain-summary .summary-note {
+  font-size: 0.85rem;
+  color: rgba(148, 163, 255, 0.8);
 }
 
 .form-card {
@@ -589,6 +624,124 @@ button:disabled {
 .overlap-actions button {
   padding: 0.45rem 1rem;
   font-size: 0.9rem;
+}
+
+.chain-stats-grid {
+  display: grid;
+  gap: clamp(1rem, 2vw, 1.6rem);
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+}
+
+.chain-sequence {
+  display: flex;
+  flex-direction: column;
+  gap: 0.9rem;
+}
+
+.chain-sequence.empty {
+  color: var(--muted);
+  font-size: 0.95rem;
+}
+
+.chain-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  background: rgba(15, 23, 42, 0.35);
+  border-radius: 14px;
+  padding: 0.6rem 0.8rem;
+  border: 1px solid rgba(148, 163, 255, 0.12);
+}
+
+.chain-node-label {
+  font-weight: 600;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+
+.chain-arrow {
+  font-size: 1.2rem;
+  color: var(--accent);
+}
+
+.chain-edge-note {
+  font-size: 0.75rem;
+  color: rgba(226, 232, 240, 0.82);
+  background: rgba(14, 165, 233, 0.14);
+  border-radius: 12px;
+  padding: 0.25rem 0.6rem;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+}
+
+.chain-edge-note strong {
+  font-weight: 600;
+}
+
+#city-chain-graph svg {
+  width: 100%;
+  height: 100%;
+}
+
+.chain-link {
+  stroke: rgba(148, 163, 255, 0.55);
+  fill: none;
+  stroke-width: 1.6px;
+  transition: stroke 0.2s ease;
+}
+
+.chain-link.is-path {
+  stroke: #22d3ee;
+}
+
+.chain-link.is-cycle {
+  stroke: #facc15;
+}
+
+.chain-node {
+  cursor: grab;
+}
+
+.chain-node circle {
+  fill: rgba(30, 64, 175, 0.68);
+  stroke: rgba(148, 163, 255, 0.7);
+  stroke-width: 1.6px;
+}
+
+.chain-node.is-path circle {
+  stroke: #22d3ee;
+  stroke-width: 2.4px;
+}
+
+.chain-node.is-cycle circle {
+  stroke: #facc15;
+  stroke-width: 2.4px;
+}
+
+.chain-node text {
+  font-size: 0.85rem;
+  font-weight: 600;
+  fill: var(--text);
+  pointer-events: none;
+}
+
+.chain-intro p {
+  color: var(--muted);
+}
+
+.chain-tooltip {
+  position: absolute;
+  pointer-events: none;
+  background: rgba(15, 23, 42, 0.94);
+  border: 1px solid rgba(34, 211, 238, 0.3);
+  border-radius: 12px;
+  padding: 0.5rem 0.75rem;
+  font-size: 0.8rem;
+  line-height: 1.4;
+  z-index: 10;
 }
 
 @media (max-width: 1024px) {
