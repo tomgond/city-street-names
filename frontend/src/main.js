@@ -28,6 +28,9 @@ const state = {
   similarityLookup: new Map(),
   streetIndex: new Map(),
   rarityWeights: {},
+  cityUniqueness: [],
+  cityUniquenessRank: new Map(),
+  cityUniquenessById: new Map(),
   cityHonors: {
     graph: null,
     nodesById: new Map(),
@@ -64,7 +67,9 @@ const elements = {
   home: {
     network: document.getElementById('network-preview'),
     heatmap: document.getElementById('similarity-heatmap'),
-    topList: document.getElementById('top-cities-list')
+    topList: document.getElementById('top-cities-list'),
+    distinctivePanel: document.getElementById('distinctive-cities-panel'),
+    distinctiveList: document.getElementById('distinctive-cities-list')
   },
   graph: {
     canvas: document.getElementById('graph-view-canvas'),
@@ -593,12 +598,13 @@ async function loadData() {
       return payload;
     };
 
-    const [cities, similarityTop, streetIndex, rarity, honorGraph] = await Promise.all([
+    const [cities, similarityTop, streetIndex, rarity, honorGraph, uniquenessRaw] = await Promise.all([
       fetchJson('cities.json'),
       fetchJson('similarity_top.json'),
       fetchJson('street_index.json'),
       fetchJson('rarity_weights.json'),
-      fetchJson('city_name_graph.json', { optional: true })
+      fetchJson('city_name_graph.json', { optional: true }),
+      fetchJson('city_uniqueness.json', { optional: true })
     ]);
 
     console.info('[data] datasets loaded', {
@@ -613,6 +619,46 @@ async function loadData() {
     state.cityMap = new Map(state.cities.map(city => [city.id, city]));
     state.cityNameLookup = new Map(state.cities.map(city => [city.name, city]));
     state.graphLayouts.clear();
+
+    const uniquenessList = Array.isArray(uniquenessRaw)
+      ? uniquenessRaw
+      : state.cities.map(city => ({
+          id: city.id,
+          name: city.name,
+          streetCount: city.streetCount,
+          uniqueStreetCount: city.uniqueStreetCount ?? 0,
+          uniqueStreetShare: city.uniqueStreetShare ?? 0,
+          meanRarityWeight: city.meanRarityWeight ?? 0,
+          medianRarityWeight: city.medianRarityWeight ?? 0
+        }));
+
+    uniquenessList.sort((a, b) => {
+      const shareDiff = (b.uniqueStreetShare || 0) - (a.uniqueStreetShare || 0);
+      if (Math.abs(shareDiff) > 1e-9) return shareDiff;
+      const countDiff = (b.uniqueStreetCount || 0) - (a.uniqueStreetCount || 0);
+      if (countDiff !== 0) return countDiff;
+      const meanDiff = (b.meanRarityWeight || 0) - (a.meanRarityWeight || 0);
+      if (Math.abs(meanDiff) > 1e-9) return meanDiff;
+      return (a.name || '').localeCompare(b.name || '');
+    });
+
+    state.cityUniqueness = uniquenessList.map((entry, index) => ({
+      ...entry,
+      rank: typeof entry.rank === 'number' ? entry.rank : index + 1
+    }));
+    state.cityUniquenessById = new Map(state.cityUniqueness.map(entry => [String(entry.id), entry]));
+    state.cityUniquenessRank = new Map(state.cityUniqueness.map(entry => [String(entry.id), entry.rank]));
+    state.cities.forEach(city => {
+      const uniqueness = state.cityUniquenessById.get(String(city.id));
+      if (!uniqueness) {
+        return;
+      }
+      city.uniqueStreetCount = uniqueness.uniqueStreetCount ?? city.uniqueStreetCount ?? 0;
+      city.uniqueStreetShare = uniqueness.uniqueStreetShare ?? city.uniqueStreetShare ?? 0;
+      city.meanRarityWeight = uniqueness.meanRarityWeight ?? city.meanRarityWeight ?? 0;
+      city.medianRarityWeight = uniqueness.medianRarityWeight ?? city.medianRarityWeight ?? 0;
+      city.uniquenessRank = uniqueness.rank ?? city.uniquenessRank;
+    });
 
     state.similarityTop = new Map(Object.entries(similarityTop || {}));
     const similarityLookup = new Map();
@@ -979,6 +1025,7 @@ function renderHome(force = false) {
   renderNetworkPreview(force);
   renderHeatmap(force);
   renderTopCitiesList();
+  renderDistinctiveCities();
   console.info('[viz] renderHome end');
   console.timeEnd('[viz] renderHome');
 }
@@ -2052,6 +2099,51 @@ function renderTopCitiesList() {
     .join('');
 }
 
+function formatPercentage(value, digits = 1) {
+  if (typeof value !== 'number' || Number.isNaN(value)) {
+    return '0%';
+  }
+  const percentage = value * 100;
+  const safeDigits = Math.max(0, Math.min(3, digits));
+  return `${percentage.toFixed(safeDigits)}%`;
+}
+
+function renderDistinctiveCities(limit = 8) {
+  const panel = elements.home.distinctivePanel;
+  const list = elements.home.distinctiveList;
+  if (!panel || !list) return;
+
+  const entries = state.cityUniqueness.slice(0, limit);
+  if (!entries.length) {
+    panel.hidden = true;
+    list.innerHTML = '';
+    return;
+  }
+
+  panel.hidden = false;
+  list.innerHTML = entries
+    .map(entry => {
+      const uniqueCount = entry.uniqueStreetCount ?? 0;
+      const share = formatPercentage(entry.uniqueStreetShare ?? 0, 1);
+      const median = typeof entry.medianRarityWeight === 'number' ? entry.medianRarityWeight : 0;
+      const mean = typeof entry.meanRarityWeight === 'number' ? entry.meanRarityWeight : 0;
+      const rank = entry.rank ?? 0;
+      return `
+        <li>
+          <div class="row-main">
+            <span class="rank">#${rank}</span>
+            <strong>${entry.name}</strong>
+          </div>
+          <div class="row-sub">
+            <span>${uniqueCount.toLocaleString()} רחובות ייחודיים (${share})</span>
+            <span>ממוצע נדירות: ${mean.toFixed(3)}, חציון: ${median.toFixed(3)}</span>
+          </div>
+        </li>
+      `;
+    })
+    .join('');
+}
+
 function renderCity(primaryId, secondaryId = '') {
   const city = state.cityMap.get(primaryId);
   if (!city) {
@@ -2068,6 +2160,12 @@ function renderCity(primaryId, secondaryId = '') {
   setCityInputValue(elements.city.primarySelect, elements.city.primarySuggestions, primaryId);
 
   const similarity = state.similarityTop.get(primaryId) || [];
+  const uniqueCount = city.uniqueStreetCount ?? 0;
+  const uniqueShare = typeof city.uniqueStreetShare === 'number' ? city.uniqueStreetShare : city.streetCount ? uniqueCount / city.streetCount : 0;
+  const meanRarity = typeof city.meanRarityWeight === 'number' ? city.meanRarityWeight : 0;
+  const medianRarity = typeof city.medianRarityWeight === 'number' ? city.medianRarityWeight : 0;
+  const uniquenessRank = state.cityUniquenessRank.get(String(primaryId)) ?? city.uniquenessRank ?? null;
+  const rankLabel = uniquenessRank ? `#${uniquenessRank}` : '—';
   elements.city.summary.innerHTML = `
     <h2>${city.name}</h2>
     <div class="street-meta">
@@ -2078,6 +2176,18 @@ function renderCity(primaryId, secondaryId = '') {
       <div>
         <div>חיבורים משמעותיים:</div>
         <strong>${similarity.length}</strong>
+      </div>
+      <div>
+        <div>רחובות ייחודיים:</div>
+        <strong>${uniqueCount.toLocaleString()} (${formatPercentage(uniqueShare, 1)})</strong>
+      </div>
+      <div>
+        <div>מדד נדירות (ממוצע/חציון):</div>
+        <strong>${meanRarity.toFixed(3)} / ${medianRarity.toFixed(3)}</strong>
+      </div>
+      <div>
+        <div>דירוג ייחודיות ארצי:</div>
+        <strong>${rankLabel}</strong>
       </div>
     </div>
   `;

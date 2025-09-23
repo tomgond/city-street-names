@@ -12,6 +12,7 @@ import logging
 import math
 import os
 import shutil
+import statistics
 import sys
 import time
 from collections import Counter, defaultdict
@@ -41,6 +42,8 @@ class StreetProcessingPipeline:
         self.city_names = {}
         self.city_communities = {}
         self.city_name_graph = {}
+        self.city_uniqueness = {}
+        self.city_uniqueness_ranking = []
 
     def load_data(self, csv_path):
         """Load street data from CSV file."""
@@ -104,6 +107,67 @@ class StreetProcessingPipeline:
 
         compute_time = time.time() - start_time
         logger.info("Computed rarity weights in %.2fs", compute_time)
+        return self
+
+    def compute_city_uniqueness_metrics(self):
+        """Summarize per-city uniqueness and rarity statistics."""
+        logger.info("Computing per-city uniqueness metrics")
+        start_time = time.time()
+
+        unique_counts = defaultdict(int)
+        for norm_key, cities in self.street_to_cities.items():
+            if len(cities) != 1:
+                continue
+            city_code = next(iter(cities))
+            unique_counts[city_code] += 1
+
+        metrics = {}
+        ranking_entries = []
+        for city_code, streets in self.cities_data.items():
+            street_keys = list(streets.keys())
+            total_streets = len(street_keys)
+            if total_streets:
+                weights = [self.rarity_weights.get(key, 0.0) for key in street_keys]
+                mean_weight = sum(weights) / total_streets if weights else 0.0
+                median_weight = statistics.median(weights) if weights else 0.0
+            else:
+                mean_weight = 0.0
+                median_weight = 0.0
+
+            unique_count = unique_counts.get(city_code, 0)
+            share = (unique_count / total_streets) if total_streets else 0.0
+
+            metrics[city_code] = {
+                'unique_street_count': unique_count,
+                'unique_street_share': share,
+                'mean_rarity_weight': mean_weight,
+                'median_rarity_weight': median_weight,
+            }
+
+            ranking_entries.append({
+                'id': str(city_code),
+                'name': self.city_names.get(city_code, ''),
+                'streetCount': total_streets,
+                'uniqueStreetCount': unique_count,
+                'uniqueStreetShare': share,
+                'meanRarityWeight': mean_weight,
+                'medianRarityWeight': median_weight,
+            })
+
+        ranking_entries.sort(
+            key=lambda item: (
+                -(item['uniqueStreetShare'] or 0.0),
+                -(item['uniqueStreetCount'] or 0),
+                -(item['meanRarityWeight'] or 0.0),
+                item['name'],
+            )
+        )
+
+        self.city_uniqueness = metrics
+        self.city_uniqueness_ranking = ranking_entries
+
+        elapsed = time.time() - start_time
+        logger.info("Computed uniqueness metrics for %d cities in %.2fs", len(metrics), elapsed)
         return self
 
     def calculate_jaccard_similarity(self, city_a_streets, city_b_streets):
@@ -577,6 +641,18 @@ class StreetProcessingPipeline:
             if community is not None:
                 city_entry['community'] = community
 
+            uniqueness = self.city_uniqueness.get(city_code)
+            if uniqueness:
+                city_entry['uniqueStreetCount'] = uniqueness['unique_street_count']
+                city_entry['uniqueStreetShare'] = round(uniqueness['unique_street_share'], 6)
+                city_entry['meanRarityWeight'] = round(uniqueness['mean_rarity_weight'], 6)
+                city_entry['medianRarityWeight'] = round(uniqueness['median_rarity_weight'], 6)
+            else:
+                city_entry['uniqueStreetCount'] = 0
+                city_entry['uniqueStreetShare'] = 0.0
+                city_entry['meanRarityWeight'] = 0.0
+                city_entry['medianRarityWeight'] = 0.0
+
             for key in sorted_keys:
                 info = city_meta.get(key, {})
                 city_entry['streets'].append({
@@ -593,6 +669,20 @@ class StreetProcessingPipeline:
 
         with open(os.path.join(output_dir, 'cities.json'), 'w', encoding='utf-8') as f:
             json.dump(cities_output, f, indent=2, ensure_ascii=False)
+
+        if self.city_uniqueness_ranking:
+            uniqueness_output = []
+            for rank, entry in enumerate(self.city_uniqueness_ranking, start=1):
+                uniqueness_output.append({
+                    **entry,
+                    'rank': rank,
+                    'uniqueStreetShare': round(entry['uniqueStreetShare'], 6),
+                    'meanRarityWeight': round(entry['meanRarityWeight'], 6),
+                    'medianRarityWeight': round(entry['medianRarityWeight'], 6),
+                })
+
+            with open(os.path.join(output_dir, 'city_uniqueness.json'), 'w', encoding='utf-8') as f:
+                json.dump(uniqueness_output, f, indent=2, ensure_ascii=False)
 
         # Build an index of streets to cities with metadata
         street_index_output = {}
@@ -653,6 +743,8 @@ class StreetProcessingPipeline:
             filenames.append('similarity_top.json')
         if self.city_name_graph:
             filenames.append('city_name_graph.json')
+        if self.city_uniqueness_ranking:
+            filenames.append('city_uniqueness.json')
 
         for filename in filenames:
             source = output_path / filename
@@ -678,6 +770,9 @@ def main():
 
     # Compute rarity weights
     pipeline.compute_rarity_weights()
+
+    # Summarize per-city uniqueness metrics
+    pipeline.compute_city_uniqueness_metrics()
 
     # Build city honor graph before similarity calculations
     pipeline.build_city_name_honor_graph()
