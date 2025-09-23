@@ -28,6 +28,14 @@ const state = {
   similarityLookup: new Map(),
   streetIndex: new Map(),
   rarityWeights: {},
+  cityHonors: {
+    graph: null,
+    nodesById: new Map(),
+    pathEdgeKeys: new Set(),
+    cycleEdgeKeys: new Set(),
+    pathNodeIds: new Set(),
+    cycleNodeIds: new Set()
+  },
   fuse: null,
   cityFuse: null,
   cityCoords: null,
@@ -44,7 +52,8 @@ const state = {
   rendered: {
     networkPreview: false,
     heatmap: false,
-    graphFull: false
+    graphFull: false,
+    cityHonors: false
   }
 };
 
@@ -61,6 +70,12 @@ const elements = {
     canvas: document.getElementById('graph-view-canvas'),
     layoutSelect: document.getElementById('graph-layout-select'),
     metricSelect: document.getElementById('graph-metric-select')
+  },
+  dedications: {
+    summary: document.getElementById('city-chain-summary'),
+    graph: document.getElementById('city-chain-graph'),
+    path: document.getElementById('city-chain-path'),
+    cycle: document.getElementById('city-chain-cycle')
   },
   city: {
     primarySelect: document.getElementById('city-select-primary'),
@@ -83,6 +98,10 @@ const elements = {
 
 let streetMapInstance = null;
 let resizeTimer = null;
+
+function makeEdgeKey(source, target) {
+  return `${source}__${target}`;
+}
 
 function toggleLoading(show, message = 'טוען נתונים...') {
   let overlay = document.getElementById('app-loading-overlay');
@@ -539,6 +558,8 @@ function onRouteChange() {
         window.location.hash = expectedHash;
       }
     }
+  } else if (view === 'dedications') {
+    renderCityDedicationView(true);
   } else if (view === 'graph') {
     state.rendered.graphFull = false;
     renderGraphView(true);
@@ -551,10 +572,14 @@ async function loadData() {
   toggleLoading(true, 'טוען נתוני בסיס...');
   try {
     const base = `${import.meta.env.BASE_URL}data/processed`;
-    const fetchJson = async (name) => {
+    const fetchJson = async (name, { optional = false } = {}) => {
       console.info(`[data] fetching ${name}`);
       const response = await fetch(`${base}/${name}`, { cache: 'no-store' });
       if (!response.ok) {
+        if (optional && response.status === 404) {
+          console.warn('[data] optional dataset missing', name);
+          return null;
+        }
         console.error('[data] fetch failed', name, response.status, response.statusText);
         throw new Error(`לא ניתן לטעון את הקובץ ${name} (סטטוס ${response.status})`);
       }
@@ -568,11 +593,12 @@ async function loadData() {
       return payload;
     };
 
-    const [cities, similarityTop, streetIndex, rarity] = await Promise.all([
+    const [cities, similarityTop, streetIndex, rarity, honorGraph] = await Promise.all([
       fetchJson('cities.json'),
       fetchJson('similarity_top.json'),
       fetchJson('street_index.json'),
-      fetchJson('rarity_weights.json')
+      fetchJson('rarity_weights.json'),
+      fetchJson('city_name_graph.json', { optional: true })
     ]);
 
     console.info('[data] datasets loaded', {
@@ -636,6 +662,7 @@ async function loadData() {
       }
     });
     state.rarityWeights = rarity || {};
+    state.cityHonors = prepareCityHonorGraph(honorGraph);
     state.cityFuse = state.cities.length
       ? new Fuse(state.cities, {
           keys: ['name'],
@@ -647,6 +674,7 @@ async function loadData() {
     state.rendered.networkPreview = false;
     state.rendered.heatmap = false;
     state.rendered.graphFull = false;
+    state.rendered.cityHonors = false;
 
     const streetItems = Array.from(state.streetIndex.entries()).map(([key, value]) => ({
       key,
@@ -696,6 +724,72 @@ async function loadData() {
     toggleLoading(false);
     console.timeEnd('[data] total');
   }
+}
+
+function prepareCityHonorGraph(raw) {
+  const base = {
+    graph: null,
+    nodesById: new Map(),
+    pathEdgeKeys: new Set(),
+    cycleEdgeKeys: new Set(),
+    pathNodeIds: new Set(),
+    cycleNodeIds: new Set()
+  };
+
+  if (!raw || typeof raw !== 'object') {
+    return base;
+  }
+
+  const graph = {
+    nodes: Array.isArray(raw.nodes) ? raw.nodes.map(node => ({
+      ...node,
+      id: String(node.id)
+    })) : [],
+    links: Array.isArray(raw.links) ? raw.links.map(link => ({
+      ...link,
+      source: String(link.source),
+      target: String(link.target)
+    })) : [],
+    stats: raw.stats || {}
+  };
+
+  const nodesById = new Map(graph.nodes.map(node => [node.id, node]));
+
+  const pathEdgeKeys = new Set();
+  const cycleEdgeKeys = new Set();
+  const pathNodeIds = new Set();
+  const cycleNodeIds = new Set();
+
+  const pathEntry = graph.stats?.longestPath;
+  if (pathEntry && Array.isArray(pathEntry.cities)) {
+    pathEntry.cities.forEach(cityId => pathNodeIds.add(String(cityId)));
+  }
+  if (pathEntry && Array.isArray(pathEntry.edges)) {
+    pathEntry.edges.forEach(edge => {
+      if (!edge || edge.source === undefined || edge.target === undefined) return;
+      pathEdgeKeys.add(makeEdgeKey(String(edge.source), String(edge.target)));
+    });
+  }
+
+  const cycleEntry = graph.stats?.longestCycle;
+  if (cycleEntry && Array.isArray(cycleEntry.cities)) {
+    cycleEntry.cities.forEach(cityId => cycleNodeIds.add(String(cityId)));
+  }
+  if (cycleEntry && Array.isArray(cycleEntry.edges)) {
+    cycleEntry.edges.forEach(edge => {
+      if (!edge || edge.source === undefined || edge.target === undefined) return;
+      cycleEdgeKeys.add(makeEdgeKey(String(edge.source), String(edge.target)));
+    });
+  }
+
+  return {
+    graph,
+    nodesById,
+    pathEdgeKeys,
+    cycleEdgeKeys,
+    pathNodeIds,
+    cycleNodeIds
+  };
 }
 
 function renderHome(force = false) {
@@ -1204,6 +1298,303 @@ function renderGraphView(force = false) {
     metric: state.graphSettings.metric
   });
   state.rendered.graphFull = true;
+}
+
+
+function renderCityDedicationSummary(graphData) {
+  const container = elements.dedications.summary;
+  if (!container) return;
+  if (!graphData || !graphData.stats || !Array.isArray(graphData.nodes) || !graphData.nodes.length) {
+    container.innerHTML = '<p class="empty-state">לא נמצאו קשרי הנצחה בין ערים.</p>';
+    return;
+  }
+
+  const { stats } = graphData;
+  const cityCount = stats.cityCount || 0;
+  const edgeCount = stats.edgeCount || 0;
+  const streetRefs = stats.streetReferenceCount || 0;
+  const average = cityCount ? (streetRefs / cityCount).toFixed(1) : '0.0';
+
+  const blocks = [
+    {
+      label: 'ערים ברשת',
+      value: cityCount,
+      note: 'ערים שמנציחות או מונצחות'
+    },
+    {
+      label: 'קשתות הנצחה',
+      value: edgeCount,
+      note: 'עיר → עיר אחרת'
+    },
+    {
+      label: 'סה"כ אזכורי רחובות',
+      value: streetRefs,
+      note: `ממוצע ${average} שמות רחוב לעיר`
+    }
+  ];
+
+  container.innerHTML = blocks
+    .map(block => `
+      <div class="summary-block">
+        <span class="summary-label">${block.label}</span>
+        <span class="summary-value">${block.value}</span>
+        <span class="summary-note">${block.note}</span>
+      </div>
+    `)
+    .join('');
+}
+
+function renderCityChainSequence(container, entry, fallbackMessage) {
+  if (!container) return;
+  container.innerHTML = '';
+  container.classList.remove('empty');
+
+  if (!entry || !Array.isArray(entry.cities) || entry.cities.length <= 1) {
+    container.textContent = fallbackMessage;
+    container.classList.add('empty');
+    return;
+  }
+
+  const row = document.createElement('div');
+  row.className = 'chain-row';
+
+  const edges = Array.isArray(entry.edges) ? entry.edges : [];
+
+  entry.cities.forEach((cityId, index) => {
+    const name = entry.cityNames && entry.cityNames[index]
+      ? entry.cityNames[index]
+      : state.cityMap.get(String(cityId))?.name || state.cityHonors.nodesById.get(String(cityId))?.name || String(cityId);
+
+    const nodeLabel = document.createElement('span');
+    nodeLabel.className = 'chain-node-label';
+    nodeLabel.textContent = name;
+    row.appendChild(nodeLabel);
+
+    if (index >= entry.cities.length - 1) {
+      return;
+    }
+
+    const arrow = document.createElement('span');
+    arrow.className = 'chain-arrow';
+    arrow.textContent = '⇢';
+    row.appendChild(arrow);
+
+    const edgeInfo = edges[index];
+    if (edgeInfo) {
+      const count = edgeInfo.streetCount || (edgeInfo.streetNames ? edgeInfo.streetNames.length : 0) || 1;
+      const examples = Array.isArray(edgeInfo.streetNames)
+        ? edgeInfo.streetNames.filter(Boolean).slice(0, 3).join(' · ')
+        : '';
+      const note = document.createElement('span');
+      note.className = 'chain-edge-note';
+      const baseLabel = count === 1 ? 'רחוב אחד' : `${count} רחובות`;
+      note.textContent = examples ? `${baseLabel} · ${examples}` : baseLabel;
+      row.appendChild(note);
+    }
+  });
+
+  container.appendChild(row);
+}
+
+function renderCityHonorGraph(force = false) {
+  const container = elements.dedications.graph;
+  if (!container) return;
+  if (!force && state.rendered.cityHonors) return;
+
+  container.innerHTML = '';
+
+  const graphData = state.cityHonors.graph;
+  if (!graphData || !Array.isArray(graphData.nodes) || !graphData.nodes.length) {
+    container.innerHTML = '<p class="empty-state">אין נתונים להצגה. הריצו את תהליך העיבוד כדי ליצור את הקובץ city_name_graph.json.</p>';
+    return;
+  }
+
+  const bounds = container.getBoundingClientRect();
+  const width = Math.max(bounds.width || container.clientWidth || 0, 720);
+  const height = Math.max(bounds.height || 0, 520);
+
+  const svg = d3
+    .select(container)
+    .append('svg')
+    .attr('viewBox', `0 0 ${width} ${height}`)
+    .attr('preserveAspectRatio', 'xMidYMid meet');
+
+  const defs = svg.append('defs');
+  const markerConfigs = [
+    { id: 'chain-arrow', color: 'rgba(148,163,255,0.65)' },
+    { id: 'chain-arrow-path', color: '#22d3ee' },
+    { id: 'chain-arrow-cycle', color: '#facc15' }
+  ];
+
+  markerConfigs.forEach(config => {
+    defs
+      .append('marker')
+      .attr('id', config.id)
+      .attr('orient', 'auto')
+      .attr('markerWidth', 10)
+      .attr('markerHeight', 10)
+      .attr('refX', 12)
+      .attr('refY', 3)
+      .attr('viewBox', '0 0 12 6')
+      .append('path')
+      .attr('d', 'M0,0 L12,3 L0,6 Z')
+      .attr('fill', config.color);
+  });
+
+  const nodes = graphData.nodes.map(node => ({ ...node }));
+  const links = graphData.links.map(link => ({
+    ...link,
+    source: link.source,
+    target: link.target,
+    _source: link.source,
+    _target: link.target
+  }));
+
+  const pathEdgeKeys = state.cityHonors.pathEdgeKeys || new Set();
+  const cycleEdgeKeys = state.cityHonors.cycleEdgeKeys || new Set();
+  const pathNodeIds = state.cityHonors.pathNodeIds || new Set();
+  const cycleNodeIds = state.cityHonors.cycleNodeIds || new Set();
+
+  const linkGroup = svg.append('g').attr('class', 'chain-links');
+  const nodeGroup = svg.append('g').attr('class', 'chain-nodes');
+
+  const linkSelection = linkGroup
+    .selectAll('line')
+    .data(links)
+    .enter()
+    .append('line')
+    .attr('class', d => {
+      const key = makeEdgeKey(d._source, d._target);
+      const classes = ['chain-link'];
+      if (pathEdgeKeys.has(key)) classes.push('is-path');
+      if (cycleEdgeKeys.has(key)) classes.push('is-cycle');
+      return classes.join(' ');
+    })
+    .attr('stroke-width', d => 1.2 + Math.min(d.streetCount || (d.streets ? d.streets.length : 1), 6) * 0.8)
+    .attr('marker-end', d => {
+      const key = makeEdgeKey(d._source, d._target);
+      if (pathEdgeKeys.has(key)) return 'url(#chain-arrow-path)';
+      if (cycleEdgeKeys.has(key)) return 'url(#chain-arrow-cycle)';
+      return 'url(#chain-arrow)';
+    });
+
+  linkSelection.append('title').text(d => {
+    const sourceName = state.cityMap.get(d._source)?.name || state.cityHonors.nodesById.get(d._source)?.name || d._source;
+    const targetName = state.cityMap.get(d._target)?.name || state.cityHonors.nodesById.get(d._target)?.name || d._target;
+    const count = d.streetCount || (d.streets ? d.streets.length : 0);
+    const names = Array.isArray(d.streets) ? d.streets.map(street => street.display).filter(Boolean).slice(0, 4).join(', ') : '';
+    const base = count === 1 ? 'רחוב אחד' : `${count} רחובות`;
+    return names ? `${sourceName} → ${targetName}\n${base}: ${names}` : `${sourceName} → ${targetName}\n${base}`;
+  });
+
+  const nodeSelection = nodeGroup
+    .selectAll('g')
+    .data(nodes)
+    .enter()
+    .append('g')
+    .attr('class', d => {
+      const classes = ['chain-node'];
+      if (pathNodeIds.has(d.id)) classes.push('is-path');
+      if (cycleNodeIds.has(d.id)) classes.push('is-cycle');
+      return classes.join(' ');
+    })
+    .call(
+      d3
+        .drag()
+        .on('start', event => {
+          if (!event.active) simulation.alphaTarget(0.3).restart();
+          event.subject.fx = event.subject.x;
+          event.subject.fy = event.subject.y;
+        })
+        .on('drag', event => {
+          event.subject.fx = event.x;
+          event.subject.fy = event.y;
+        })
+        .on('end', event => {
+          if (!event.active) simulation.alphaTarget(0);
+          event.subject.fx = null;
+          event.subject.fy = null;
+        })
+    );
+
+  nodeSelection
+    .append('circle')
+    .attr('r', d => 18 + Math.sqrt((d.honorStreetOut || 0) + (d.honorStreetIn || 0)) * 3);
+
+  nodeSelection
+    .append('text')
+    .attr('text-anchor', 'middle')
+    .attr('dominant-baseline', 'middle')
+    .text(d => d.name || d.displayName || d.id);
+
+  nodeSelection.append('title').text(d => {
+    const honorsOut = d.honorsOut || 0;
+    const honorsIn = d.honorsIn || 0;
+    const streetOut = d.honorStreetOut || 0;
+    const streetIn = d.honorStreetIn || 0;
+    return `${d.name || d.id}\nמנציחה ${honorsOut} ערים (${streetOut} שמות רחובות)\nמונצחת ב-${honorsIn} ערים (${streetIn} שמות)`;
+  });
+
+  const simulation = d3
+    .forceSimulation(nodes)
+    .force(
+      'link',
+      d3
+        .forceLink(links)
+        .id(d => d.id)
+        .distance(d => 150 - Math.min(d.streetCount || (d.streets ? d.streets.length : 1), 5) * 8)
+        .strength(0.4)
+    )
+    .force('charge', d3.forceManyBody().strength(-420))
+    .force('center', d3.forceCenter(width / 2, height / 2))
+    .force('collision', d3.forceCollide().radius(d => 26 + Math.sqrt((d.honorStreetOut || 0) + (d.honorStreetIn || 0)) * 3.5));
+
+  simulation.on('tick', () => {
+    nodes.forEach(node => clampNodeToBounds(node, width, height, 40));
+    linkSelection
+      .attr('x1', d => d.source.x)
+      .attr('y1', d => d.source.y)
+      .attr('x2', d => d.target.x)
+      .attr('y2', d => d.target.y);
+    nodeSelection.attr('transform', d => `translate(${d.x}, ${d.y})`);
+  });
+
+  simulation.alpha(1).restart();
+}
+
+function renderCityDedicationView(force = false) {
+  const graphData = state.cityHonors.graph;
+  if (!graphData || !Array.isArray(graphData.nodes) || !graphData.nodes.length) {
+    if (elements.dedications.summary) {
+      elements.dedications.summary.innerHTML = '<p class="empty-state">לא נמצאו קשרים בין ערים. הריצו את תהליך העיבוד כדי ליצור נתונים.</p>';
+    }
+    if (elements.dedications.graph) {
+      elements.dedications.graph.innerHTML = '<p class="empty-state">הגרף יופיע כאן לאחר יצירת הקובץ city_name_graph.json.</p>';
+    }
+    if (elements.dedications.path) {
+      elements.dedications.path.textContent = 'לא נמצא מסלול הנצחה מרובה ערים.';
+      elements.dedications.path.classList.add('empty');
+    }
+    if (elements.dedications.cycle) {
+      elements.dedications.cycle.textContent = 'לא נמצא מעגל הנצחה בין ערים.';
+      elements.dedications.cycle.classList.add('empty');
+    }
+    state.rendered.cityHonors = true;
+    return;
+  }
+
+  if (!force && state.rendered.cityHonors) return;
+
+  renderCityDedicationSummary(graphData);
+  renderCityHonorGraph(true);
+
+  const pathEntry = graphData.stats?.longestPath || null;
+  const cycleEntry = graphData.stats?.longestCycle || null;
+
+  renderCityChainSequence(elements.dedications.path, pathEntry, 'לא נמצא מסלול הנצחה מרובה ערים.');
+  renderCityChainSequence(elements.dedications.cycle, cycleEntry, 'לא נמצא מעגל שבו כל עיר מנציחה את הבאה וחוזרת לעצמה.');
+
+  state.rendered.cityHonors = true;
 }
 
 
@@ -2046,6 +2437,9 @@ function handleResize() {
   const { view } = parseHash();
   if (view === 'home') {
     renderHome(true);
+  } else if (view === 'dedications') {
+    state.rendered.cityHonors = false;
+    renderCityDedicationView(true);
   } else if (view === 'graph') {
     state.rendered.graphFull = false;
     renderGraphView(true);

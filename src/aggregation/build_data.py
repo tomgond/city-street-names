@@ -12,11 +12,19 @@ import logging
 import math
 import os
 import shutil
+import sys
 import time
 from collections import Counter, defaultdict
 from pathlib import Path
 
 import networkx as nx
+
+# Allow running the script directly without requiring PYTHONPATH tweaks
+ROOT_DIR = Path(__file__).resolve().parents[2]
+if str(ROOT_DIR) not in sys.path:
+    sys.path.insert(0, str(ROOT_DIR))
+
+from src.normalization.norm_data import normalize_name
 
 # Set up logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -32,6 +40,7 @@ class StreetProcessingPipeline:
         self.rarity_weights = {}
         self.city_names = {}
         self.city_communities = {}
+        self.city_name_graph = {}
 
     def load_data(self, csv_path):
         """Load street data from CSV file."""
@@ -229,6 +238,245 @@ class StreetProcessingPipeline:
 
         return self
 
+    def build_city_name_honor_graph(self):
+        """Build a directed graph of cities that name streets after other cities."""
+        logger.info("Building city honor graph based on street names")
+        start_time = time.time()
+
+        city_key_to_codes = defaultdict(set)
+        city_display_by_code = {}
+
+        def _city_name_lookup(raw_code):
+            try:
+                return self.city_names.get(int(raw_code), '')
+            except (TypeError, ValueError):
+                return self.city_names.get(raw_code, '')
+
+        for code, name in self.city_names.items():
+            normalized = normalize_name(name, drop_he=False)
+            city_display_by_code[code] = normalized["display"] or name
+            key = normalized["key"]
+            if key:
+                city_key_to_codes[key].add(code)
+
+            dropped = normalize_name(name, drop_he=True)
+            dropped_key = dropped["key"]
+            if dropped_key and dropped_key != key:
+                city_key_to_codes[dropped_key].add(code)
+
+        edges = {}
+        active_cities = set()
+
+        for source_code, streets in self.city_street_meta.items():
+            for norm_key, meta in streets.items():
+                target_codes = city_key_to_codes.get(norm_key)
+                if not target_codes:
+                    continue
+                for target_code in target_codes:
+                    if target_code == source_code:
+                        continue
+                    edge_key = (str(source_code), str(target_code))
+                    street_record = {
+                        'normKey': norm_key,
+                        'display': meta.get('display') or self.norm_keys.get(norm_key, norm_key),
+                        'normDisplay': meta.get('norm_display') or self.cities_data[source_code].get(norm_key, ''),
+                        'streetCode': meta.get('street_code', '')
+                    }
+                    entry = edges.setdefault(edge_key, {
+                        'source': edge_key[0],
+                        'target': edge_key[1],
+                        'streets': []
+                    })
+                    entry['streets'].append(street_record)
+                    active_cities.update(edge_key)
+
+        if not edges:
+            self.city_name_graph = {
+                'nodes': [],
+                'links': [],
+                'stats': {
+                    'cityCount': 0,
+                    'edgeCount': 0,
+                    'streetReferenceCount': 0,
+                    'longestPath': None,
+                    'longestCycle': None
+                }
+            }
+            logger.warning("No inter-city honor edges detected")
+            return self
+
+        def _collect_edge_details(sequence):
+            details = []
+            for src, dst in zip(sequence, sequence[1:]):
+                edge_info = edges.get((src, dst))
+                if not edge_info:
+                    continue
+                details.append({
+                    'source': src,
+                    'target': dst,
+                    'streetCount': len(edge_info['streets']),
+                    'streetNames': [street['display'] for street in edge_info['streets']]
+                })
+            return details
+
+        analysis_adjacency = defaultdict(list)
+        for (src, dst), data in edges.items():
+            weight = len(data['streets'])
+            analysis_adjacency[src].append((dst, weight))
+
+        trimmed_adjacency = {}
+        analysis_limit = 4
+        for source, neighbors in analysis_adjacency.items():
+            if not neighbors:
+                continue
+            sorted_neighbors = sorted(neighbors, key=lambda item: item[1], reverse=True)[:analysis_limit]
+            trimmed_adjacency[source] = sorted_neighbors
+
+        for node in active_cities:
+            trimmed_adjacency.setdefault(node, [])
+
+        longest_path = []
+        max_states = 250000
+        state_counter = 0
+
+        for start in active_cities:
+            if state_counter >= max_states:
+                break
+            stack = [(start, [start], {start})]
+            while stack:
+                node, path, visited = stack.pop()
+                state_counter += 1
+                if len(path) > len(longest_path):
+                    longest_path = list(path)
+                if state_counter >= max_states:
+                    logger.warning(
+                        "Longest path search hit state cap (%d); partial result length=%d",
+                        max_states,
+                        len(longest_path)
+                    )
+                    stack = []
+                    break
+                for neighbor, _ in trimmed_adjacency.get(node, []):
+                    if neighbor in visited:
+                        continue
+                    stack.append((neighbor, path + [neighbor], visited | {neighbor}))
+
+        digraph = nx.DiGraph()
+        digraph.add_nodes_from(active_cities)
+        for (src, dst), data in edges.items():
+            digraph.add_edge(src, dst, weight=len(data['streets']))
+
+        cycle_entry = None
+        path_entry = None
+
+        if len(longest_path) > 1:
+            path_details = _collect_edge_details(longest_path)
+            path_entry = {
+                'length': len(longest_path),
+                'cities': list(longest_path),
+                'cityNames': [_city_name_lookup(code) for code in longest_path],
+                'edges': path_details
+            }
+
+        analysis_graph = nx.DiGraph()
+        analysis_graph.add_nodes_from(active_cities)
+        for source, neighbors in trimmed_adjacency.items():
+            for target, _ in neighbors:
+                analysis_graph.add_edge(source, target)
+
+        try:
+            longest_cycle_nodes = []
+            cycle_cap = 5000
+            for index, cycle_nodes in enumerate(nx.simple_cycles(analysis_graph), start=1):
+                if len(cycle_nodes) > len(longest_cycle_nodes):
+                    longest_cycle_nodes = cycle_nodes
+                if index >= cycle_cap:
+                    logger.warning(
+                        "Cycle enumeration hit cap (%d); best cycle length=%d",
+                        cycle_cap,
+                        len(longest_cycle_nodes)
+                    )
+                    break
+        except nx.NetworkXNoCycle:
+            longest_cycle_nodes = []
+
+        if longest_cycle_nodes:
+            cycle_sequence = list(longest_cycle_nodes) + [longest_cycle_nodes[0]]
+            cycle_details = _collect_edge_details(cycle_sequence)
+            cycle_entry = {
+                'length': len(cycle_sequence) - 1,
+                'cities': list(cycle_sequence),
+                'cityNames': [_city_name_lookup(code) for code in cycle_sequence],
+                'edges': cycle_details
+            }
+
+        out_counts = Counter()
+        in_counts = Counter()
+        out_streets = Counter()
+        in_streets = Counter()
+
+        for (src, dst), data in edges.items():
+            out_counts[src] += 1
+            in_counts[dst] += 1
+            street_total = len(data['streets'])
+            out_streets[src] += street_total
+            in_streets[dst] += street_total
+
+        nodes_output = []
+        total_street_refs = 0
+        for code in sorted(active_cities, key=lambda cid: _city_name_lookup(cid)):
+            try:
+                numeric_code = int(code)
+            except (TypeError, ValueError):
+                numeric_code = code
+            street_count = len(self.cities_data.get(numeric_code, {}))
+            honor_out = out_counts.get(code, 0)
+            honor_in = in_counts.get(code, 0)
+            honor_out_streets = out_streets.get(code, 0)
+            honor_in_streets = in_streets.get(code, 0)
+            total_street_refs += honor_out_streets
+            nodes_output.append({
+                'id': code,
+                'name': _city_name_lookup(code),
+                'displayName': city_display_by_code.get(numeric_code, _city_name_lookup(code)),
+                'streetCount': street_count,
+                'honorsOut': honor_out,
+                'honorsIn': honor_in,
+                'honorStreetOut': honor_out_streets,
+                'honorStreetIn': honor_in_streets
+            })
+
+        links_output = []
+        for (src, dst), data in sorted(edges.items(), key=lambda item: (item[0][0], item[0][1])):
+            links_output.append({
+                'source': src,
+                'target': dst,
+                'streetCount': len(data['streets']),
+                'streets': data['streets']
+            })
+
+        self.city_name_graph = {
+            'nodes': nodes_output,
+            'links': links_output,
+            'stats': {
+                'cityCount': len(active_cities),
+                'edgeCount': len(links_output),
+                'streetReferenceCount': total_street_refs,
+                'longestPath': path_entry,
+                'longestCycle': cycle_entry
+            }
+        }
+
+        elapsed = time.time() - start_time
+        logger.info(
+            "City honor graph ready: %d nodes, %d edges (%.2fs)",
+            len(nodes_output),
+            len(links_output),
+            elapsed
+        )
+
+        return self
+
     def calculate_city_similarities(self):
         """Calculate similarities between all city pairs."""
         logger.info("Calculating city similarities")
@@ -374,6 +622,10 @@ class StreetProcessingPipeline:
         with open(os.path.join(output_dir, 'rarity_weights.json'), 'w', encoding='utf-8') as f:
             json.dump(self.rarity_weights, f, indent=2, ensure_ascii=False)
 
+        if self.city_name_graph:
+            with open(os.path.join(output_dir, 'city_name_graph.json'), 'w', encoding='utf-8') as f:
+                json.dump(self.city_name_graph, f, indent=2, ensure_ascii=False)
+
         # Export similarity top lists for light-weight analytics
         if top_similarities is not None:
             with open(os.path.join(output_dir, 'similarity_top.json'), 'w', encoding='utf-8') as f:
@@ -399,6 +651,8 @@ class StreetProcessingPipeline:
         filenames = ['cities.json', 'street_index.json', 'rarity_weights.json']
         if has_similarity_top:
             filenames.append('similarity_top.json')
+        if self.city_name_graph:
+            filenames.append('city_name_graph.json')
 
         for filename in filenames:
             source = output_path / filename
@@ -424,6 +678,9 @@ def main():
 
     # Compute rarity weights
     pipeline.compute_rarity_weights()
+
+    # Build city honor graph before similarity calculations
+    pipeline.build_city_name_honor_graph()
 
     # Calculate similarities
     similarities, base_pairs = pipeline.calculate_city_similarities()
