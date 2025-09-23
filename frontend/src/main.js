@@ -740,27 +740,13 @@ function prepareCityHonorGraph(raw) {
     return base;
   }
 
-  const graph = {
-    nodes: Array.isArray(raw.nodes) ? raw.nodes.map(node => ({
-      ...node,
-      id: String(node.id)
-    })) : [],
-    links: Array.isArray(raw.links) ? raw.links.map(link => ({
-      ...link,
-      source: String(link.source),
-      target: String(link.target)
-    })) : [],
-    stats: raw.stats || {}
-  };
-
-  const nodesById = new Map(graph.nodes.map(node => [node.id, node]));
-
+  const stats = raw.stats || {};
   const pathEdgeKeys = new Set();
   const cycleEdgeKeys = new Set();
   const pathNodeIds = new Set();
   const cycleNodeIds = new Set();
 
-  const pathEntry = graph.stats?.longestPath;
+  const pathEntry = stats.longestPath;
   if (pathEntry && Array.isArray(pathEntry.cities)) {
     pathEntry.cities.forEach(cityId => pathNodeIds.add(String(cityId)));
   }
@@ -771,7 +757,7 @@ function prepareCityHonorGraph(raw) {
     });
   }
 
-  const cycleEntry = graph.stats?.longestCycle;
+  const cycleEntry = stats.longestCycle;
   if (cycleEntry && Array.isArray(cycleEntry.cities)) {
     cycleEntry.cities.forEach(cityId => cycleNodeIds.add(String(cityId)));
   }
@@ -782,8 +768,199 @@ function prepareCityHonorGraph(raw) {
     });
   }
 
+  const graph = {
+    nodes: Array.isArray(raw.nodes)
+      ? raw.nodes.map(node => ({
+          ...node,
+          id: String(node.id)
+        }))
+      : [],
+    links: Array.isArray(raw.links)
+      ? raw.links.map(link => ({
+          ...link,
+          source: String(link.source),
+          target: String(link.target)
+        }))
+      : [],
+    stats
+  };
+
+  if (!graph.links.length) {
+    const emptyGraph = {
+      nodes: [],
+      links: [],
+      stats
+    };
+    return {
+      graph: emptyGraph,
+      nodesById: new Map(),
+      pathEdgeKeys,
+      cycleEdgeKeys,
+      pathNodeIds,
+      cycleNodeIds
+    };
+  }
+
+  const degreeMap = new Map();
+  const ensureDegree = id => {
+    const key = String(id);
+    if (!degreeMap.has(key)) {
+      degreeMap.set(key, { in: 0, out: 0 });
+    }
+    return degreeMap.get(key);
+  };
+
+  graph.links.forEach(link => {
+    if (!link || link.source === undefined || link.target === undefined) return;
+    ensureDegree(link.source).out += 1;
+    ensureDegree(link.target).in += 1;
+  });
+
+  const connectedNodeIds = new Set();
+  degreeMap.forEach((degree, id) => {
+    if ((degree.in || 0) + (degree.out || 0) > 0) {
+      connectedNodeIds.add(id);
+    }
+  });
+
+  const filteredNodes = graph.nodes.filter(node => connectedNodeIds.has(node.id));
+  const filteredLinks = graph.links.filter(
+    link => connectedNodeIds.has(link.source) && connectedNodeIds.has(link.target)
+  );
+
+  const nodeDegree = new Map();
+  const ensureNodeDegree = id => {
+    const key = String(id);
+    if (!nodeDegree.has(key)) {
+      nodeDegree.set(key, { in: 0, out: 0 });
+    }
+    return nodeDegree.get(key);
+  };
+
+  filteredLinks.forEach(link => {
+    ensureNodeDegree(link.source).out += 1;
+    ensureNodeDegree(link.target).in += 1;
+  });
+
+  const nodesById = new Map(filteredNodes.map(node => [node.id, { ...node }]));
+
+  const donorsByTarget = new Map();
+  filteredLinks.forEach(link => {
+    const sourceId = String(link.source);
+    const targetId = String(link.target);
+    const degree = nodeDegree.get(sourceId) || { in: 0, out: 0 };
+    if (degree.out !== 1 || degree.in !== 0) return;
+    if (pathNodeIds.has(sourceId) || cycleNodeIds.has(sourceId)) return;
+    const sourceNode = nodesById.get(sourceId);
+    if (!sourceNode) return;
+    if (!donorsByTarget.has(targetId)) {
+      donorsByTarget.set(targetId, []);
+    }
+    donorsByTarget.get(targetId).push({ node: sourceNode, link });
+  });
+
+  const nodesToRemove = new Set();
+  const aggregatedNodes = [];
+  const aggregatedLinks = [];
+  const AGGREGATION_THRESHOLD = 4;
+
+  // Collapse sets of leaf nodes that only honor a single city into one aggregate node
+  // so the visualization remains legible even when many small cities point to the same hub.
+
+  donorsByTarget.forEach((entries, targetId) => {
+    const validEntries = entries.filter(entry => entry && entry.node && entry.link);
+    if (validEntries.length < AGGREGATION_THRESHOLD) return;
+
+    const aggregateId = `group:${targetId}`;
+    const aggregateSize = validEntries.length;
+    const aggregateCityIds = validEntries.map(entry => entry.node.id);
+    const aggregateCityNames = validEntries
+      .map(entry => entry.node.name || entry.node.displayName || entry.node.id)
+      .filter(Boolean);
+
+    let streetTotal = 0;
+    const uniqueStreets = new Map();
+
+    validEntries.forEach(({ link }) => {
+      const streetCount = Number(link?.streetCount || 0);
+      if (streetCount > 0) {
+        streetTotal += streetCount;
+      } else if (Array.isArray(link?.streets)) {
+        streetTotal += link.streets.length;
+      } else if (Array.isArray(link?.streetNames)) {
+        streetTotal += link.streetNames.length;
+      } else {
+        streetTotal += 1;
+      }
+
+      if (Array.isArray(link?.streets)) {
+        link.streets.forEach(street => {
+          const label = street?.display || street?.name || '';
+          if (!label) return;
+          if (!uniqueStreets.has(label)) {
+            uniqueStreets.set(label, { display: label });
+          }
+        });
+      } else if (Array.isArray(link?.streetNames)) {
+        link.streetNames.forEach(name => {
+          if (!name) return;
+          const label = String(name);
+          if (!uniqueStreets.has(label)) {
+            uniqueStreets.set(label, { display: label });
+          }
+        });
+      }
+    });
+
+    aggregatedNodes.push({
+      id: aggregateId,
+      name: `${aggregateSize} ערים נוספות`,
+      displayName: `${aggregateSize} ערים נוספות`,
+      aggregated: true,
+      aggregateTarget: targetId,
+      aggregateSize,
+      aggregateCityIds,
+      aggregateCityNames,
+      honorsOut: aggregateSize,
+      honorsIn: 0,
+      honorStreetOut: streetTotal,
+      honorStreetIn: 0
+    });
+
+    aggregatedLinks.push({
+      source: aggregateId,
+      target: targetId,
+      streetCount: streetTotal,
+      streets: Array.from(uniqueStreets.values()).slice(0, 8),
+      aggregated: true,
+      aggregateSize,
+      aggregateCityIds,
+      aggregateCityNames
+    });
+
+    validEntries.forEach(entry => {
+      nodesToRemove.add(entry.node.id);
+    });
+  });
+
+  const finalNodes = filteredNodes.filter(node => !nodesToRemove.has(node.id));
+  const finalLinks = filteredLinks.filter(
+    link => !nodesToRemove.has(String(link.source)) && !nodesToRemove.has(String(link.target))
+  );
+
+  finalNodes.push(...aggregatedNodes);
+  finalLinks.push(...aggregatedLinks);
+
+  const preparedGraph = {
+    nodes: finalNodes,
+    links: finalLinks,
+    stats
+  };
+
+  const nodesById = new Map(preparedGraph.nodes.map(node => [node.id, node]));
+
   return {
-    graph,
+    graph: preparedGraph,
     nodesById,
     pathEdgeKeys,
     cycleEdgeKeys,
@@ -1355,45 +1532,131 @@ function renderCityChainSequence(container, entry, fallbackMessage) {
     return;
   }
 
-  const row = document.createElement('div');
-  row.className = 'chain-row';
-
-  const edges = Array.isArray(entry.edges) ? entry.edges : [];
-
-  entry.cities.forEach((cityId, index) => {
-    const name = entry.cityNames && entry.cityNames[index]
-      ? entry.cityNames[index]
-      : state.cityMap.get(String(cityId))?.name || state.cityHonors.nodesById.get(String(cityId))?.name || String(cityId);
-
-    const nodeLabel = document.createElement('span');
-    nodeLabel.className = 'chain-node-label';
-    nodeLabel.textContent = name;
-    row.appendChild(nodeLabel);
-
-    if (index >= entry.cities.length - 1) {
-      return;
+  const cityIds = entry.cities.map(cityId => String(cityId));
+  const cityNames = cityIds.map((cityId, index) => {
+    if (entry.cityNames && entry.cityNames[index]) {
+      return entry.cityNames[index];
     }
-
-    const arrow = document.createElement('span');
-    arrow.className = 'chain-arrow';
-    arrow.textContent = '⇢';
-    row.appendChild(arrow);
-
-    const edgeInfo = edges[index];
-    if (edgeInfo) {
-      const count = edgeInfo.streetCount || (edgeInfo.streetNames ? edgeInfo.streetNames.length : 0) || 1;
-      const examples = Array.isArray(edgeInfo.streetNames)
-        ? edgeInfo.streetNames.filter(Boolean).slice(0, 3).join(' · ')
-        : '';
-      const note = document.createElement('span');
-      note.className = 'chain-edge-note';
-      const baseLabel = count === 1 ? 'רחוב אחד' : `${count} רחובות`;
-      note.textContent = examples ? `${baseLabel} · ${examples}` : baseLabel;
-      row.appendChild(note);
-    }
+    return state.cityMap.get(cityId)?.name || state.cityHonors.nodesById.get(cityId)?.name || cityId;
   });
 
-  container.appendChild(row);
+  const edges = Array.isArray(entry.edges) ? entry.edges : [];
+  const isCycle = cityIds.length > 1 && cityIds[0] === cityIds[cityIds.length - 1];
+  const steps = edges.length || Math.max(0, cityIds.length - (isCycle ? 0 : 1));
+
+  const summary = document.createElement('div');
+  summary.className = 'chain-sequence-meta';
+  summary.innerHTML = `
+    <span><strong>${cityIds.length}</strong> ערים</span>
+    <span>·</span>
+    <span><strong>${steps}</strong> מעברי הנצחה</span>
+  `;
+
+  if (cityNames.length >= 2) {
+    const startName = cityNames[0];
+    const endName = cityNames[cityNames.length - 1];
+    const range = document.createElement('span');
+    range.className = 'chain-sequence-range';
+    if (isCycle && startName === endName) {
+      range.textContent = `מעגל שמתחיל ומסתיים ב-${startName}`;
+    } else {
+      range.textContent = `מתחיל ב-${startName} ומסתיים ב-${endName}`;
+    }
+    summary.appendChild(range);
+  }
+
+  container.appendChild(summary);
+
+  const fragment = document.createDocumentFragment();
+
+  edges.forEach((edge, index) => {
+    const fromIndex = Math.min(index, cityIds.length - 1);
+    const toIndex = index + 1 < cityIds.length ? index + 1 : (isCycle ? (index + 1) % cityIds.length : index + 1);
+    const fromId = cityIds[fromIndex];
+    const toId = cityIds[toIndex] || String(edge?.target ?? '');
+    const fromName = cityNames[fromIndex] || state.cityMap.get(fromId)?.name || fromId;
+    const toName = cityNames[toIndex] || state.cityMap.get(toId)?.name || state.cityHonors.nodesById.get(toId)?.name || toId;
+
+    const step = document.createElement('div');
+    step.className = 'chain-step';
+
+    const indexBadge = document.createElement('span');
+    indexBadge.className = 'chain-step-index';
+    indexBadge.textContent = String(index + 1);
+    step.appendChild(indexBadge);
+
+    const cityBlock = document.createElement('div');
+    cityBlock.className = 'chain-step-cities';
+
+    const fromLabel = document.createElement('span');
+    fromLabel.className = 'chain-step-city from';
+    fromLabel.textContent = fromName;
+
+    const arrow = document.createElement('span');
+    arrow.className = 'chain-step-arrow';
+    arrow.textContent = '⇢';
+
+    const toLabel = document.createElement('span');
+    toLabel.className = 'chain-step-city to';
+    toLabel.textContent = toName;
+
+    cityBlock.append(fromLabel, arrow, toLabel);
+    step.appendChild(cityBlock);
+
+    const details = document.createElement('div');
+    details.className = 'chain-step-details';
+
+    const rawCount = Number(edge?.streetCount || 0);
+    const streetCount = rawCount > 0
+      ? rawCount
+      : Array.isArray(edge?.streetNames)
+        ? edge.streetNames.length
+        : Array.isArray(edge?.streets)
+          ? edge.streets.length
+          : 1;
+    const countLabel = streetCount === 1 ? 'רחוב אחד' : `${streetCount} רחובות`;
+    const countBadge = document.createElement('span');
+    countBadge.className = 'chain-step-count';
+    countBadge.textContent = countLabel;
+    details.appendChild(countBadge);
+
+    const exampleNames = [];
+    if (Array.isArray(edge?.streetNames)) {
+      edge.streetNames.forEach(name => {
+        if (!name) return;
+        exampleNames.push(String(name));
+      });
+    } else if (Array.isArray(edge?.streets)) {
+      edge.streets.forEach(street => {
+        const label = street?.display || street?.name;
+        if (!label) return;
+        exampleNames.push(String(label));
+      });
+    }
+
+    if (exampleNames.length) {
+      const unique = Array.from(new Set(exampleNames)).slice(0, 4);
+      const example = document.createElement('span');
+      example.className = 'chain-step-examples';
+      example.textContent = `דוגמאות: ${unique.join(' · ')}`;
+      details.appendChild(example);
+    }
+
+    step.appendChild(details);
+    fragment.appendChild(step);
+  });
+
+  container.appendChild(fragment);
+}
+
+function getHonorNodeRadius(node) {
+  if (!node) return 18;
+  const totalStreets = Number(node.honorStreetOut || 0) + Number(node.honorStreetIn || 0);
+  if (node.aggregated) {
+    const fallback = node.aggregateSize || 1;
+    return 16 + Math.sqrt(totalStreets || fallback) * 2.4;
+  }
+  return 18 + Math.sqrt(totalStreets || 1) * 3;
 }
 
 function renderCityHonorGraph(force = false) {
@@ -1468,9 +1731,14 @@ function renderCityHonorGraph(force = false) {
       const classes = ['chain-link'];
       if (pathEdgeKeys.has(key)) classes.push('is-path');
       if (cycleEdgeKeys.has(key)) classes.push('is-cycle');
+      if (d.aggregated) classes.push('is-aggregate');
       return classes.join(' ');
     })
-    .attr('stroke-width', d => 1.2 + Math.min(d.streetCount || (d.streets ? d.streets.length : 1), 6) * 0.8)
+    .attr('stroke-width', d => {
+      const count = Number(d.streetCount || 0);
+      const fallback = Array.isArray(d.streets) ? d.streets.length : 1;
+      return 1.2 + Math.min(count > 0 ? count : fallback, 6) * 0.8;
+    })
     .attr('marker-end', d => {
       const key = makeEdgeKey(d._source, d._target);
       if (pathEdgeKeys.has(key)) return 'url(#chain-arrow-path)';
@@ -1481,10 +1749,39 @@ function renderCityHonorGraph(force = false) {
   linkSelection.append('title').text(d => {
     const sourceName = state.cityMap.get(d._source)?.name || state.cityHonors.nodesById.get(d._source)?.name || d._source;
     const targetName = state.cityMap.get(d._target)?.name || state.cityHonors.nodesById.get(d._target)?.name || d._target;
-    const count = d.streetCount || (d.streets ? d.streets.length : 0);
-    const names = Array.isArray(d.streets) ? d.streets.map(street => street.display).filter(Boolean).slice(0, 4).join(', ') : '';
-    const base = count === 1 ? 'רחוב אחד' : `${count} רחובות`;
-    return names ? `${sourceName} → ${targetName}\n${base}: ${names}` : `${sourceName} → ${targetName}\n${base}`;
+    const rawCount = Number(d.streetCount || 0);
+    const computedCount = rawCount > 0 ? rawCount : Array.isArray(d.streets) ? d.streets.length : 1;
+    const base = computedCount === 1 ? 'רחוב אחד' : `${computedCount} רחובות`;
+    const names = Array.isArray(d.streets)
+      ? d.streets.map(street => street?.display).filter(Boolean).slice(0, 4)
+      : [];
+
+    if (d.aggregated) {
+      const cityNames = Array.isArray(d.aggregateCityNames)
+        ? d.aggregateCityNames.slice(0, 6)
+        : [];
+      const extraCities = Array.isArray(d.aggregateCityNames) && d.aggregateCityNames.length > 6
+        ? `ועוד ${d.aggregateCityNames.length - 6}`
+        : '';
+      const lines = [
+        `${d.aggregateSize === 1 ? 'עיר אחת' : `${d.aggregateSize} ערים`} מנציחות את ${targetName}`,
+        base
+      ];
+      if (cityNames.length) {
+        lines.push(cityNames.join(', '));
+      }
+      if (extraCities) {
+        lines.push(extraCities);
+      }
+      if (names.length) {
+        lines.push(`דוגמאות: ${names.join(', ')}`);
+      }
+      return lines.filter(Boolean).join('\n');
+    }
+
+    return names.length
+      ? `${sourceName} → ${targetName}\n${base}: ${names.join(', ')}`
+      : `${sourceName} → ${targetName}\n${base}`;
   });
 
   const nodeSelection = nodeGroup
@@ -1496,6 +1793,7 @@ function renderCityHonorGraph(force = false) {
       const classes = ['chain-node'];
       if (pathNodeIds.has(d.id)) classes.push('is-path');
       if (cycleNodeIds.has(d.id)) classes.push('is-cycle');
+      if (d.aggregated) classes.push('is-aggregate');
       return classes.join(' ');
     })
     .call(
@@ -1519,7 +1817,7 @@ function renderCityHonorGraph(force = false) {
 
   nodeSelection
     .append('circle')
-    .attr('r', d => 18 + Math.sqrt((d.honorStreetOut || 0) + (d.honorStreetIn || 0)) * 3);
+    .attr('r', d => getHonorNodeRadius(d));
 
   nodeSelection
     .append('text')
@@ -1532,6 +1830,15 @@ function renderCityHonorGraph(force = false) {
     const honorsIn = d.honorsIn || 0;
     const streetOut = d.honorStreetOut || 0;
     const streetIn = d.honorStreetIn || 0;
+    if (d.aggregated) {
+      const targetName = state.cityMap.get(d.aggregateTarget)?.name || state.cityHonors.nodesById.get(d.aggregateTarget)?.name || d.aggregateTarget;
+      const size = d.aggregateSize || (Array.isArray(d.aggregateCityNames) ? d.aggregateCityNames.length : 0) || 1;
+      const label = size === 1 ? 'עיר אחת' : `${size} ערים`;
+      const names = Array.isArray(d.aggregateCityNames) ? d.aggregateCityNames.slice(0, 6).join(', ') : '';
+      return names
+        ? `${label} שמנציחות את ${targetName}\n${names}`
+        : `${label} שמנציחות את ${targetName}`;
+    }
     return `${d.name || d.id}\nמנציחה ${honorsOut} ערים (${streetOut} שמות רחובות)\nמונצחת ב-${honorsIn} ערים (${streetIn} שמות)`;
   });
 
@@ -1547,7 +1854,7 @@ function renderCityHonorGraph(force = false) {
     )
     .force('charge', d3.forceManyBody().strength(-420))
     .force('center', d3.forceCenter(width / 2, height / 2))
-    .force('collision', d3.forceCollide().radius(d => 26 + Math.sqrt((d.honorStreetOut || 0) + (d.honorStreetIn || 0)) * 3.5));
+    .force('collision', d3.forceCollide().radius(d => getHonorNodeRadius(d) + 8));
 
   simulation.on('tick', () => {
     nodes.forEach(node => clampNodeToBounds(node, width, height, 40));
