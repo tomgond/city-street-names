@@ -842,7 +842,7 @@ function prepareCityHonorGraph(raw) {
     ensureNodeDegree(link.target).in += 1;
   });
 
-  const nodesById = new Map(filteredNodes.map(node => [node.id, { ...node }]));
+  const filteredNodesById = new Map(filteredNodes.map(node => [node.id, { ...node }]));
 
   const donorsByTarget = new Map();
   filteredLinks.forEach(link => {
@@ -851,7 +851,7 @@ function prepareCityHonorGraph(raw) {
     const degree = nodeDegree.get(sourceId) || { in: 0, out: 0 };
     if (degree.out !== 1 || degree.in !== 0) return;
     if (pathNodeIds.has(sourceId) || cycleNodeIds.has(sourceId)) return;
-    const sourceNode = nodesById.get(sourceId);
+    const sourceNode = filteredNodesById.get(sourceId);
     if (!sourceNode) return;
     if (!donorsByTarget.has(targetId)) {
       donorsByTarget.set(targetId, []);
