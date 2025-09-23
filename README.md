@@ -34,12 +34,14 @@
    * Weighted Jaccard (rarity = 1/log(1+city\_count)).
    * Top-N matches per city.
    * Inverted index: `{street_name: [cities...]}`.
+   * Per-city rarity metrics: מספר הרחובות הייחודיים בעיר, חלק הרחובות הייחודיים מתוך כלל הרחובות, ממוצע וחציון משקל נדירות.
 5. **Export JSON**:
 
-   * `cities.json` (id, name, cluster\_id?).
-   * `similarity_top.json` (top matches per city).
-   * `name_index.json` (street → cities, variants).
-   * `name_meta.json` (counts, rarity).
+   * `cities.json` – מזהה, שם עיר, מספר רחובות מנורמל, שיוך לקהילה (אם זמין) ומדדי ייחודיות (כמות/חלק ייחודיים, ממוצע/חציון משקלי נדירות).
+   * `city_uniqueness.json` – דירוג ארצי של הערים לפי חלק הרחובות הייחודיים, כולל ממוצע/חציון משקלי נדירות להקשר.
+   * `similarity_top.json` – הערים הדומות ביותר לכל עיר.
+   * `street_index.json` – אינדקס רחוב ↦ רשימת ערים והצגת השם המקומית.
+   * `rarity_weights.json` – משקל נדירות לכל שם מנורמל.
 
 ### Python Environment
 
@@ -57,10 +59,12 @@ python3 -m pip install networkx
 
   * Network graph: cities as nodes, edges for Jaccard ≥ τ.
   * Heatmap: similarity between top 50 cities.
+  * "הערים עם השמות הייחודיים ביותר" – כרטיס דרוג המציג את הערים עם החלק הגבוה ביותר של שמות רחובות ייחודיים.
 * **City Page**:
 
   * Bar chart of top-10 similar cities.
   * Shared street list (top examples).
+  * Summary card includes unique-street counts, share, rarity averages and national distinctiveness rank.
 * **Street Page**:
 
   * Show display name + variants.
