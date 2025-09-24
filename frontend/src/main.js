@@ -44,8 +44,11 @@ const state = {
   cityCoords: null,
   graphLayouts: new Map(),
   graphSettings: {
-    layout: 'force',
+    layout: 'community',
     metric: 'weightedJaccard'
+  },
+  cityView: {
+    autoDefaultUsed: false
   },
   defaults: {
     cityId: '',
@@ -312,10 +315,7 @@ function getSimilarityMetric(sourceId, targetId, metric = 'weightedJaccard') {
 
 
 function applyDefaultSelections() {
-  const defaultCityId = resolveDefaultCityId();
-  if (defaultCityId) {
-    setCityInputValue(elements.city.primarySelect, elements.city.primarySuggestions, defaultCityId);
-  }
+  state.cityView.autoDefaultUsed = false;
   const defaultStreetKey = resolveDefaultStreetKey();
   if (defaultStreetKey && elements.street.searchInput) {
     const entry = state.streetIndex.get(defaultStreetKey);
@@ -528,10 +528,19 @@ function onRouteChange() {
     renderHome();
   } else if (view === 'city') {
     const [primary, secondary] = params;
-    const fallbackId = resolveDefaultCityId();
-    const primaryId = primary && state.cityMap.has(primary) ? primary : fallbackId;
+    let primaryId = '';
+    if (primary && state.cityMap.has(primary)) {
+      primaryId = primary;
+    } else if (!state.cityView.autoDefaultUsed) {
+      const fallbackId = resolveDefaultCityId();
+      if (fallbackId) {
+        primaryId = fallbackId;
+        state.cityView.autoDefaultUsed = true;
+      }
+    }
     const secondaryId = secondary && state.cityMap.has(secondary) ? secondary : '';
     if (primaryId) {
+      state.cityView.autoDefaultUsed = true;
       setCityInputValue(elements.city.primarySelect, elements.city.primarySuggestions, primaryId);
       if (secondaryId) {
         setCityInputValue(elements.city.secondarySelect, elements.city.secondarySuggestions, secondaryId);
@@ -544,6 +553,7 @@ function onRouteChange() {
         window.location.hash = expectedHash;
       }
     } else {
+      state.cityView.autoDefaultUsed = true;
       setCityInputValue(elements.city.primarySelect, elements.city.primarySuggestions, '');
       setCityInputValue(elements.city.secondarySelect, elements.city.secondarySuggestions, '');
       renderCity('', '');
@@ -1842,25 +1852,7 @@ function renderCityHonorGraph(force = false) {
       if (cycleNodeIds.has(d.id)) classes.push('is-cycle');
       if (d.aggregated) classes.push('is-aggregate');
       return classes.join(' ');
-    })
-    .call(
-      d3
-        .drag()
-        .on('start', event => {
-          if (!event.active) simulation.alphaTarget(0.3).restart();
-          event.subject.fx = event.subject.x;
-          event.subject.fy = event.subject.y;
-        })
-        .on('drag', event => {
-          event.subject.fx = event.x;
-          event.subject.fy = event.y;
-        })
-        .on('end', event => {
-          if (!event.active) simulation.alphaTarget(0);
-          event.subject.fx = null;
-          event.subject.fy = null;
-        })
-    );
+    });
 
   nodeSelection
     .append('circle')
@@ -1889,6 +1881,44 @@ function renderCityHonorGraph(force = false) {
     return `${d.name || d.id}\nמנציחה ${honorsOut} ערים (${streetOut} שמות רחובות)\nמונצחת ב-${honorsIn} ערים (${streetIn} שמות)`;
   });
 
+  const updatePositions = () => {
+    nodes.forEach(node => clampNodeToBounds(node, width, height, 40));
+    linkSelection
+      .attr('x1', d => d.source.x)
+      .attr('y1', d => d.source.y)
+      .attr('x2', d => d.target.x)
+      .attr('y2', d => d.target.y);
+    nodeSelection.attr('transform', d => `translate(${d.x}, ${d.y})`);
+  };
+
+  const manualDrag = d3
+    .drag()
+    .on('start', event => {
+      const node = clampNodeToBounds(event.subject, width, height, 40);
+      node.fx = node.x;
+      node.fy = node.y;
+      node.vx = 0;
+      node.vy = 0;
+    })
+    .on('drag', event => {
+      event.subject.x = event.x;
+      event.subject.y = event.y;
+      const node = clampNodeToBounds(event.subject, width, height, 40);
+      node.fx = node.x;
+      node.fy = node.y;
+      node.vx = 0;
+      node.vy = 0;
+      updatePositions();
+    })
+    .on('end', event => {
+      const node = clampNodeToBounds(event.subject, width, height, 40);
+      node.fx = node.x;
+      node.fy = node.y;
+      node.vx = 0;
+      node.vy = 0;
+      updatePositions();
+    });
+
   const simulation = d3
     .forceSimulation(nodes)
     .force(
@@ -1903,14 +1933,17 @@ function renderCityHonorGraph(force = false) {
     .force('center', d3.forceCenter(width / 2, height / 2))
     .force('collision', d3.forceCollide().radius(d => getHonorNodeRadius(d) + 8));
 
-  simulation.on('tick', () => {
-    nodes.forEach(node => clampNodeToBounds(node, width, height, 40));
-    linkSelection
-      .attr('x1', d => d.source.x)
-      .attr('y1', d => d.source.y)
-      .attr('x2', d => d.target.x)
-      .attr('y2', d => d.target.y);
-    nodeSelection.attr('transform', d => `translate(${d.x}, ${d.y})`);
+  simulation.on('tick', updatePositions);
+  simulation.on('end', () => {
+    updatePositions();
+    nodes.forEach(node => {
+      node.fx = node.x;
+      node.fy = node.y;
+      node.vx = 0;
+      node.vy = 0;
+    });
+    nodeSelection.call(manualDrag);
+    nodeSelection.style('cursor', 'grab');
   });
 
   simulation.alpha(1).restart();
@@ -2144,9 +2177,55 @@ function renderDistinctiveCities(limit = 8) {
     .join('');
 }
 
+function getUniqueStreetExamples(cityId, limit = 6) {
+  if (!cityId || !state.cityMap.has(cityId)) {
+    return [];
+  }
+  const city = state.cityMap.get(cityId);
+  const streets = Array.isArray(city?.streets) ? city.streets : [];
+  if (!streets.length) {
+    return [];
+  }
+
+  const examples = [];
+  streets.forEach(street => {
+    if (!street || !street.key) return;
+    const entry = state.streetIndex.get(street.key);
+    if (!entry) return;
+    const { cityCount, cities = [] } = entry;
+    if (Number(cityCount || cities.length) > 1) {
+      const onlyCurrentCity = Array.isArray(cities)
+        ? cities.every(item => String(item?.id) === String(cityId))
+        : false;
+      if (!onlyCurrentCity) {
+        return;
+      }
+    }
+    const rarity = typeof street.rarityWeight === 'number' && Number.isFinite(street.rarityWeight)
+      ? street.rarityWeight
+      : typeof entry.rarityWeight === 'number' && Number.isFinite(entry.rarityWeight)
+        ? entry.rarityWeight
+        : Number(state.rarityWeights?.[street.key] || 0);
+    examples.push({
+      key: street.key,
+      display: street.display || entry.display || street.normDisplay || street.key,
+      rarity: Number.isFinite(rarity) ? rarity : 0
+    });
+  });
+
+  examples.sort((a, b) => {
+    const rarityDiff = (b.rarity || 0) - (a.rarity || 0);
+    if (Math.abs(rarityDiff) > 1e-9) return rarityDiff;
+    return (a.display || '').localeCompare(b.display || '');
+  });
+
+  return examples.slice(0, Math.max(0, limit));
+}
+
 function renderCity(primaryId, secondaryId = '') {
   const city = state.cityMap.get(primaryId);
   if (!city) {
+    state.cityView.autoDefaultUsed = true;
     setCityInputValue(elements.city.primarySelect, elements.city.primarySuggestions, '');
     setCityInputValue(elements.city.secondarySelect, elements.city.secondarySuggestions, '');
     elements.city.summary.innerHTML = '<p>בחרו עיר כדי לראות את הנתונים.</p>';
@@ -2157,6 +2236,7 @@ function renderCity(primaryId, secondaryId = '') {
     return;
   }
 
+  state.cityView.autoDefaultUsed = true;
   setCityInputValue(elements.city.primarySelect, elements.city.primarySuggestions, primaryId);
 
   const similarity = state.similarityTop.get(primaryId) || [];
@@ -2166,6 +2246,31 @@ function renderCity(primaryId, secondaryId = '') {
   const medianRarity = typeof city.medianRarityWeight === 'number' ? city.medianRarityWeight : 0;
   const uniquenessRank = state.cityUniquenessRank.get(String(primaryId)) ?? city.uniquenessRank ?? null;
   const rankLabel = uniquenessRank ? `#${uniquenessRank}` : '—';
+  const uniqueExamples = getUniqueStreetExamples(primaryId, 6);
+  const uniqueSection = uniqueExamples.length
+    ? `
+      <div class="city-unique-examples">
+        <h3>דוגמאות לרחובות ייחודיים</h3>
+        <ul class="unique-street-list">
+          ${uniqueExamples
+            .map(
+              street => `
+                <li>
+                  <span class="unique-street-name">${street.display}</span>
+                  <span class="unique-street-rarity">משקל נדירות: ${street.rarity.toFixed(3)}</span>
+                </li>
+              `
+            )
+            .join('')}
+        </ul>
+      </div>
+    `
+    : `
+      <div class="city-unique-examples empty">
+        <h3>דוגמאות לרחובות ייחודיים</h3>
+        <p>לא נמצאו רחובות ייחודיים להצגה.</p>
+      </div>
+    `;
   elements.city.summary.innerHTML = `
     <h2>${city.name}</h2>
     <div class="street-meta">
@@ -2190,6 +2295,7 @@ function renderCity(primaryId, secondaryId = '') {
         <strong>${rankLabel}</strong>
       </div>
     </div>
+    ${uniqueSection}
   `;
 
   renderCityChart(city, similarity);
@@ -2524,6 +2630,7 @@ function setupCityHandlers() {
   if (primaryInput && primarySuggestions) {
     wireCityAutocomplete(primaryInput, primarySuggestions, {
       onSelect: city => {
+        state.cityView.autoDefaultUsed = true;
         const companionId = getSelectedCityId(secondaryInput);
         const hasCompanion = companionId && state.cityMap.has(companionId);
         const partnerId = hasCompanion ? companionId : '';
@@ -2534,6 +2641,7 @@ function setupCityHandlers() {
         }
       },
       onClear: () => {
+        state.cityView.autoDefaultUsed = true;
         renderCity('', '');
         if (secondaryInput) {
           setCityInputValue(secondaryInput, secondarySuggestions, '');
@@ -2548,6 +2656,7 @@ function setupCityHandlers() {
   if (secondaryInput && secondarySuggestions) {
     wireCityAutocomplete(secondaryInput, secondarySuggestions, {
       onSelect: city => {
+        state.cityView.autoDefaultUsed = true;
         const primaryId = getSelectedCityId(primaryInput);
         if (!primaryId) {
           setCityInputValue(primaryInput, primarySuggestions, city.id);
@@ -2565,6 +2674,7 @@ function setupCityHandlers() {
         }
       },
       onClear: () => {
+        state.cityView.autoDefaultUsed = true;
         const primaryId = getSelectedCityId(primaryInput);
         if (!primaryId) return;
         renderSharedStreets(primaryId, '');
