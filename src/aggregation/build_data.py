@@ -22,10 +22,17 @@ import networkx as nx
 
 # Allow running the script directly without requiring PYTHONPATH tweaks
 ROOT_DIR = Path(__file__).resolve().parents[2]
-if str(ROOT_DIR) not in sys.path:
-    sys.path.insert(0, str(ROOT_DIR))
+SRC_DIR = ROOT_DIR / 'src'
+for candidate in (ROOT_DIR, SRC_DIR):
+    candidate_str = str(candidate)
+    if candidate_str not in sys.path:
+        sys.path.insert(0, candidate_str)
 
 from src.normalization.norm_data import normalize_name
+
+# Minimum streets required for a city to appear in the honor graph
+MIN_STREETS_FOR_HONOR_GRAPH = 30
+
 
 # Set up logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -307,18 +314,74 @@ class StreetProcessingPipeline:
         logger.info("Building city honor graph based on street names")
         start_time = time.time()
 
+        def _normalize_code(raw_code):
+            try:
+                return int(raw_code)
+            except (TypeError, ValueError):
+                return raw_code
+
+        street_counts = {}
+        eligible_codes = set()
+        eligible_lookup = set()
+
+        def _register_lookup(value):
+            eligible_lookup.add(value)
+            eligible_lookup.add(str(value))
+
+        for code, streets in self.cities_data.items():
+            count = len(streets)
+            street_counts[code] = count
+            street_counts[str(code)] = count
+            normalized_code = _normalize_code(code)
+            street_counts[normalized_code] = count
+            street_counts[str(normalized_code)] = count
+            if count >= MIN_STREETS_FOR_HONOR_GRAPH:
+                eligible_codes.add(str(code))
+                _register_lookup(code)
+                _register_lookup(normalized_code)
+
+        if not eligible_codes:
+            self.city_name_graph = {
+                'nodes': [],
+                'links': [],
+                'stats': {
+                    'cityCount': 0,
+                    'edgeCount': 0,
+                    'streetReferenceCount': 0,
+                    'longestPath': None,
+                    'longestCycle': None
+                }
+            }
+            logger.warning(
+                "No cities meet the minimum street threshold (%d)",
+                MIN_STREETS_FOR_HONOR_GRAPH
+            )
+            return self
+
         city_key_to_codes = defaultdict(set)
         city_display_by_code = {}
 
+        def _is_eligible(raw_code):
+            if raw_code in eligible_lookup:
+                return True
+            normalized = _normalize_code(raw_code)
+            return normalized in eligible_lookup or str(normalized) in eligible_lookup
+
         def _city_name_lookup(raw_code):
             try:
-                return self.city_names.get(int(raw_code), '')
+                numeric = int(raw_code)
             except (TypeError, ValueError):
                 return self.city_names.get(raw_code, '')
+            return self.city_names.get(numeric, self.city_names.get(raw_code, ''))
 
         for code, name in self.city_names.items():
+            if not _is_eligible(code):
+                continue
             normalized = normalize_name(name, drop_he=False)
-            city_display_by_code[code] = normalized["display"] or name
+            display_value = normalized["display"] or name
+            normalized_code_value = _normalize_code(code)
+            for variant in {code, str(code), normalized_code_value, str(normalized_code_value)}:
+                city_display_by_code[variant] = display_value
             key = normalized["key"]
             if key:
                 city_key_to_codes[key].add(code)
@@ -327,23 +390,30 @@ class StreetProcessingPipeline:
             dropped_key = dropped["key"]
             if dropped_key and dropped_key != key:
                 city_key_to_codes[dropped_key].add(code)
-
         edges = {}
         active_cities = set()
 
         for source_code, streets in self.city_street_meta.items():
+            if not _is_eligible(source_code):
+                continue
+            normalized_source_code = _normalize_code(source_code)
+            source_city_data = self.cities_data.get(source_code)
+            if source_city_data is None:
+                source_city_data = self.cities_data.get(normalized_source_code, {})
             for norm_key, meta in streets.items():
                 target_codes = city_key_to_codes.get(norm_key)
                 if not target_codes:
                     continue
                 for target_code in target_codes:
+                    if not _is_eligible(target_code):
+                        continue
                     if target_code == source_code:
                         continue
                     edge_key = (str(source_code), str(target_code))
                     street_record = {
                         'normKey': norm_key,
                         'display': meta.get('display') or self.norm_keys.get(norm_key, norm_key),
-                        'normDisplay': meta.get('norm_display') or self.cities_data[source_code].get(norm_key, ''),
+                        'normDisplay': meta.get('norm_display') or source_city_data.get(norm_key, ''),
                         'streetCode': meta.get('street_code', '')
                     }
                     entry = edges.setdefault(edge_key, {
@@ -493,7 +563,9 @@ class StreetProcessingPipeline:
                 numeric_code = int(code)
             except (TypeError, ValueError):
                 numeric_code = code
-            street_count = len(self.cities_data.get(numeric_code, {}))
+            street_count = street_counts.get(numeric_code, street_counts.get(code, 0))
+            if street_count < MIN_STREETS_FOR_HONOR_GRAPH:
+                continue
             honor_out = out_counts.get(code, 0)
             honor_in = in_counts.get(code, 0)
             honor_out_streets = out_streets.get(code, 0)
@@ -509,9 +581,12 @@ class StreetProcessingPipeline:
                 'honorStreetOut': honor_out_streets,
                 'honorStreetIn': honor_in_streets
             })
+        allowed_ids = {str(node['id']) for node in nodes_output}
 
         links_output = []
         for (src, dst), data in sorted(edges.items(), key=lambda item: (item[0][0], item[0][1])):
+            if src not in allowed_ids or dst not in allowed_ids:
+                continue
             links_output.append({
                 'source': src,
                 'target': dst,
@@ -519,11 +594,43 @@ class StreetProcessingPipeline:
                 'streets': data['streets']
             })
 
+        gephi_graph = nx.DiGraph()
+        for node in nodes_output:
+            node_id = str(node['id'])
+            if node_id not in allowed_ids:
+                continue
+            gephi_graph.add_node(
+                node_id,
+                label=node['displayName'],
+                cityName=node['name'],
+                streetCount=node['streetCount'],
+                honorsOut=node['honorsOut'],
+                honorsIn=node['honorsIn'],
+                honorStreetOut=node['honorStreetOut'],
+                honorStreetIn=node['honorStreetIn']
+            )
+        for link in links_output:
+            street_names = [street['display'] for street in link['streets']]
+            gephi_graph.add_edge(
+                link['source'],
+                link['target'],
+                weight=link['streetCount'],
+                streetCount=link['streetCount'],
+                streetNames=' | '.join(street_names)
+            )
+        gephi_path = Path('data/processed/city_honor_graph.gexf')
+        try:
+            gephi_path.parent.mkdir(parents=True, exist_ok=True)
+            nx.write_gexf(gephi_graph, gephi_path)
+            logger.info('Saved honor graph for Gephi: %s', gephi_path)
+        except Exception as exc:
+            logger.warning('Failed to save honor graph for Gephi: %s', exc)
+
         self.city_name_graph = {
             'nodes': nodes_output,
             'links': links_output,
             'stats': {
-                'cityCount': len(active_cities),
+                'cityCount': len(nodes_output),
                 'edgeCount': len(links_output),
                 'streetReferenceCount': total_street_refs,
                 'longestPath': path_entry,
@@ -823,3 +930,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
