@@ -35,7 +35,7 @@ MIN_STREETS_FOR_HONOR_GRAPH = 30
 
 # Maximum number of similar neighbors retained per city in similarity outputs
 DEFAULT_TOP_NEIGHBOR_COUNT = int(os.environ.get('CITY_SIMILARITY_TOP_N', '20'))
-DEFAULT_TOP_NEIGHBOR_PERCENTILE = float(os.environ.get('CITY_SIMILARITY_TOP_PERCENTILE', '50'))
+DEFAULT_TOP_NEIGHBOR_PERCENTILE = float(os.environ.get('CITY_SIMILARITY_TOP_PERCENTILE', '30'))
 
 # Set up logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
