@@ -33,6 +33,9 @@ from src.normalization.norm_data import normalize_name
 # Minimum streets required for a city to appear in the honor graph
 MIN_STREETS_FOR_HONOR_GRAPH = 30
 
+# Maximum number of similar neighbors retained per city in similarity outputs
+DEFAULT_TOP_NEIGHBOR_COUNT = int(os.environ.get('CITY_SIMILARITY_TOP_N', '20'))
+
 
 # Set up logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -200,7 +203,12 @@ class StreetProcessingPipeline:
 
         return intersection_weight / union_weight if union_weight > 0 else 0.0
 
-    def get_top_shared_streets(self, city_a_streets, city_b_streets, top_n=10):
+    def get_top_shared_streets(
+        self,
+        city_a_streets,
+        city_b_streets,
+        top_n=DEFAULT_TOP_NEIGHBOR_COUNT,
+    ):
         """Get top shared streets by rarity weight."""
         intersection = city_a_streets & city_b_streets
 
@@ -673,7 +681,11 @@ class StreetProcessingPipeline:
 
                 jaccard = self.calculate_jaccard_similarity(city_a_streets, city_b_streets)
                 weighted_jaccard = self.calculate_weighted_jaccard_similarity(city_a_streets, city_b_streets)
-                top_streets = self.get_top_shared_streets(city_a_streets, city_b_streets, top_n=10)
+                top_streets = self.get_top_shared_streets(
+                    city_a_streets,
+                    city_b_streets,
+                    top_n=DEFAULT_TOP_NEIGHBOR_COUNT,
+                )
 
                 base_pairs.append({
                     'city_a': city_a,
@@ -921,7 +933,7 @@ def main():
     similarity_top = {}
     for city_code, sims in top_similarities.items():
         sims.sort(key=lambda item: item['weightedJaccard'], reverse=True)
-        similarity_top[str(city_code)] = sims[:10]
+        similarity_top[str(city_code)] = sims[:DEFAULT_TOP_NEIGHBOR_COUNT]
 
     pipeline.detect_communities(similarity_top)
     pipeline.export_data(output_dir, similarities, similarity_top)
