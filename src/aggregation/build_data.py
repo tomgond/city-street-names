@@ -35,7 +35,7 @@ MIN_STREETS_FOR_HONOR_GRAPH = 30
 
 # Maximum number of similar neighbors retained per city in similarity outputs
 DEFAULT_TOP_NEIGHBOR_COUNT = int(os.environ.get('CITY_SIMILARITY_TOP_N', '20'))
-DEFAULT_TOP_NEIGHBOR_PERCENTILE = float(os.environ.get('CITY_SIMILARITY_TOP_PERCENTILE', '10'))
+DEFAULT_TOP_NEIGHBOR_PERCENTILE = float(os.environ.get('CITY_SIMILARITY_TOP_PERCENTILE', '50'))
 
 # Set up logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -997,40 +997,34 @@ def main():
 
     raw_edge_count = sum(len(sims) for sims in top_similarities.values())
     percentile_fraction = max(0.0, min(DEFAULT_TOP_NEIGHBOR_PERCENTILE / 100.0, 1.0))
-    weight_threshold = None
-    if raw_edge_count and percentile_fraction > 0.0:
-        weighted_scores = [
-            entry['weightedJaccard']
-            for sims in top_similarities.values()
-            for entry in sims
-            if entry.get('weightedJaccard') is not None
-        ]
-        if weighted_scores:
-            weighted_scores.sort(reverse=True)
-            retain_count = max(1, math.ceil(len(weighted_scores) * percentile_fraction))
-            weight_threshold = weighted_scores[retain_count - 1]
 
     similarity_top = {}
+    retained_edge_count = 0
+    percentile_thresholds = []
     for city_code, sims in top_similarities.items():
         sims.sort(key=lambda item: item['weightedJaccard'], reverse=True)
-        filtered_entries = []
-        for entry in sims:
-            weight = entry.get('weightedJaccard', 0.0)
-            if weight_threshold is not None and weight < weight_threshold:
-                continue
-            filtered_entries.append(entry)
-        if DEFAULT_TOP_NEIGHBOR_COUNT > 0:
-            filtered_entries = filtered_entries[:DEFAULT_TOP_NEIGHBOR_COUNT]
-        similarity_top[str(city_code)] = filtered_entries
 
-    retained_edge_count = sum(len(items) for items in similarity_top.values())
-    if weight_threshold is not None:
+        keep_count = len(sims)
+        if percentile_fraction > 0.0 and sims:
+            percentile_limit = max(1, math.ceil(len(sims) * percentile_fraction))
+            keep_count = min(keep_count, percentile_limit)
+        if DEFAULT_TOP_NEIGHBOR_COUNT > 0:
+            keep_count = min(keep_count, DEFAULT_TOP_NEIGHBOR_COUNT)
+
+        filtered_entries = sims[:keep_count]
+        if filtered_entries:
+            percentile_thresholds.append(filtered_entries[-1].get('weightedJaccard', 0.0))
+
+        similarity_top[str(city_code)] = filtered_entries
+        retained_edge_count += len(filtered_entries)
+
+    if percentile_fraction > 0.0 and percentile_thresholds:
         logger.info(
-            "Retained %d of %d city similarity pairs using top %.1f%% threshold (>= %.4f)",
+            "Retained %d of %d city similarity pairs using top %.1f%% threshold (per-city min >= %.4f)",
             retained_edge_count,
             raw_edge_count,
             percentile_fraction * 100,
-            weight_threshold,
+            min(percentile_thresholds),
         )
     else:
         logger.info(
