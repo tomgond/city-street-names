@@ -35,7 +35,7 @@ MIN_STREETS_FOR_HONOR_GRAPH = 30
 
 # Maximum number of similar neighbors retained per city in similarity outputs
 DEFAULT_TOP_NEIGHBOR_COUNT = int(os.environ.get('CITY_SIMILARITY_TOP_N', '20'))
-
+DEFAULT_TOP_NEIGHBOR_PERCENTILE = float(os.environ.get('CITY_SIMILARITY_TOP_PERCENTILE', '10'))
 
 # Set up logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -314,6 +314,71 @@ class StreetProcessingPipeline:
             len(community_groups),
             elapsed
         )
+
+        return self
+
+    def export_similarity_graph_for_gephi(self, similarity_top, output_dir, metric='weightedJaccard'):
+        """Export the filtered similarity graph to a GEXF file for Gephi."""
+        metric_key = metric if metric in {'weightedJaccard', 'jaccard'} else 'weightedJaccard'
+        graph = nx.Graph()
+        output_path = Path(output_dir)
+
+        for city_code, name in self.city_names.items():
+            node_id = str(city_code)
+            node_attrs = {
+                'label': name,
+                'cityName': name,
+                'cityCode': node_id,
+                'streetCount': len(self.cities_data.get(city_code, {})),
+            }
+            community_id = self.city_communities.get(node_id)
+            if community_id is None:
+                community_id = self.city_communities.get(city_code)
+            if community_id is not None:
+                try:
+                    node_attrs['community'] = int(community_id)
+                except (TypeError, ValueError):
+                    node_attrs['community'] = community_id
+            graph.add_node(node_id, **node_attrs)
+
+        edge_map = {}
+        for source, neighbors in (similarity_top or {}).items():
+            source_id = str(source)
+            if not neighbors:
+                continue
+            for entry in neighbors:
+                target_raw = entry.get('city')
+                if target_raw is None:
+                    continue
+                target_id = str(target_raw)
+                if target_id == source_id:
+                    continue
+                weight = float(entry.get(metric_key) or 0.0)
+                jaccard_value = float(entry.get('jaccard') or 0.0)
+                edge_key = tuple(sorted((source_id, target_id)))
+                current = edge_map.get(edge_key)
+                if current is None or weight > current['weight']:
+                    edge_map[edge_key] = {'weight': weight, 'jaccard': jaccard_value}
+
+        for (node_a, node_b), attrs in edge_map.items():
+            graph.add_edge(node_a, node_b, weight=attrs['weight'], jaccard=attrs['jaccard'])
+
+        if graph.number_of_edges() == 0:
+            logger.warning('No city similarity edges passed the threshold; skipping Gephi export')
+            return self
+
+        try:
+            output_path.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            logger.warning('Unable to prepare Gephi export path %s: %s', output_path, exc)
+            return self
+
+        gephi_path = output_path / 'city_similarity_graph.gexf'
+        try:
+            nx.write_gexf(graph, gephi_path)
+            logger.info('Exported city similarity graph to %s', gephi_path)
+        except Exception as exc:
+            logger.warning('Failed to export Gephi graph: %s', exc)
 
         return self
 
@@ -930,12 +995,51 @@ def main():
         _append_similarity(city_a, city_b, pair_data)
         _append_similarity(city_b, city_a, pair_data)
 
+    raw_edge_count = sum(len(sims) for sims in top_similarities.values())
+    percentile_fraction = max(0.0, min(DEFAULT_TOP_NEIGHBOR_PERCENTILE / 100.0, 1.0))
+    weight_threshold = None
+    if raw_edge_count and percentile_fraction > 0.0:
+        weighted_scores = [
+            entry['weightedJaccard']
+            for sims in top_similarities.values()
+            for entry in sims
+            if entry.get('weightedJaccard') is not None
+        ]
+        if weighted_scores:
+            weighted_scores.sort(reverse=True)
+            retain_count = max(1, math.ceil(len(weighted_scores) * percentile_fraction))
+            weight_threshold = weighted_scores[retain_count - 1]
+
     similarity_top = {}
     for city_code, sims in top_similarities.items():
         sims.sort(key=lambda item: item['weightedJaccard'], reverse=True)
-        similarity_top[str(city_code)] = sims[:DEFAULT_TOP_NEIGHBOR_COUNT]
+        filtered_entries = []
+        for entry in sims:
+            weight = entry.get('weightedJaccard', 0.0)
+            if weight_threshold is not None and weight < weight_threshold:
+                continue
+            filtered_entries.append(entry)
+        if DEFAULT_TOP_NEIGHBOR_COUNT > 0:
+            filtered_entries = filtered_entries[:DEFAULT_TOP_NEIGHBOR_COUNT]
+        similarity_top[str(city_code)] = filtered_entries
+
+    retained_edge_count = sum(len(items) for items in similarity_top.values())
+    if weight_threshold is not None:
+        logger.info(
+            "Retained %d of %d city similarity pairs using top %.1f%% threshold (>= %.4f)",
+            retained_edge_count,
+            raw_edge_count,
+            percentile_fraction * 100,
+            weight_threshold,
+        )
+    else:
+        logger.info(
+            "Retained %d city similarity pairs without percentile threshold",
+            retained_edge_count,
+        )
 
     pipeline.detect_communities(similarity_top)
+    pipeline.export_similarity_graph_for_gephi(similarity_top, output_dir)
     pipeline.export_data(output_dir, similarities, similarity_top)
 
     logger.info("Processing complete!")
