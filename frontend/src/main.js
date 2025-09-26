@@ -63,6 +63,11 @@ const state = {
   }
 };
 
+const HEBREW_COLLATOR = new Intl.Collator('he', {
+  sensitivity: 'base',
+  numeric: true
+});
+
 const elements = {
   views: Array.from(document.querySelectorAll('[data-view]')),
   navLinks: Array.from(document.querySelectorAll('.nav-link')),
@@ -2776,21 +2781,38 @@ function renderStreetResults(matches, { autoSelectFirst = false, query = '' } = 
     return;
   }
 
-  const list = document.createElement('ul');
-  matches.forEach(result => {
-    const data = result.item;
-    const resolvedKey = resolveStreetKey(data.key);
-    const entry = resolvedKey ? state.streetIndex.get(resolvedKey) : null;
-    if (!entry) return;
+  const enriched = matches
+    .map(result => {
+      const data = result.item;
+      const resolvedKey = resolveStreetKey(data.key);
+      if (!resolvedKey) return null;
+      const entry = state.streetIndex.get(resolvedKey);
+      if (!entry) return null;
+      return { entry, resolvedKey };
+    })
+    .filter(item => item !== null);
 
+  if (!enriched.length) {
+    container.innerHTML = '<p>לא נמצאו תוצאות תואמות.</p>';
+    return;
+  }
+
+  enriched.sort((a, b) => {
+    const countDiff = (b.entry.cityCount || 0) - (a.entry.cityCount || 0);
+    if (countDiff !== 0) return countDiff;
+    return HEBREW_COLLATOR.compare(a.entry.display, b.entry.display);
+  });
+
+  const list = document.createElement('ul');
+  enriched.forEach(({ entry, resolvedKey }) => {
     const li = document.createElement('li');
     const button = document.createElement('button');
     button.type = 'button';
     button.className = 'street-result-link';
     button.dataset.key = resolvedKey;
     button.innerHTML = `
-      <strong>${entry.display}</strong>
-      <div>מופיע ב-${entry.cityCount} ערים</div>
+      <span class="street-result-name">${entry.display}</span>
+      <span class="street-result-meta">מופיע ב-${entry.cityCount.toLocaleString()} ערים</span>
     `;
     const selectStreet = () => navigateToStreet(resolvedKey);
     button.addEventListener('click', selectStreet);

@@ -439,6 +439,10 @@ button:disabled {
   gap: 0.7rem;
 }
 
+#street-results ul {
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+}
+
 .shared-streets li,
 .overlap-list li,
 #street-results li {
@@ -467,7 +471,16 @@ button:disabled {
   padding: 0;
   cursor: pointer;
   display: grid;
-  gap: 0.4rem;
+  gap: 0.25rem;
+}
+
+.street-result-name {
+  font-weight: 700;
+}
+
+.street-result-meta {
+  font-size: 0.85rem;
+  color: var(--muted);
 }
 
 .street-result-link:hover strong {
@@ -475,8 +488,10 @@ button:disabled {
 }
 
 #street-results li {
+  padding: 0.6rem 0.9rem;
   flex-direction: column;
   align-items: flex-start;
+  gap: 0.35rem;
   transition: background 0.2s ease, transform 0.2s ease;
 }
 
