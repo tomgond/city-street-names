@@ -105,7 +105,8 @@ const elements = {
     searchInput: document.getElementById('street-search'),
     searchButton: document.getElementById('street-search-btn'),
     results: document.getElementById('street-results'),
-    details: document.getElementById('street-details')
+    details: document.getElementById('street-details'),
+    directory: document.getElementById('street-directory')
   }
 };
 
@@ -590,6 +591,9 @@ async function loadData() {
   console.info('[data] loadData start');
   console.time('[data] total');
   toggleLoading(true, 'טוען נתוני בסיס...');
+  if (elements.street.directory) {
+    elements.street.directory.innerHTML = '<p class="street-directory-placeholder">טוען רשימת רחובות מלאה…</p>';
+  }
   try {
     const base = `${import.meta.env.BASE_URL}data/processed`;
     const fetchJson = async (name, { optional = false } = {}) => {
@@ -755,6 +759,7 @@ async function loadData() {
 
     state.defaults.cityId = resolveDefaultCityId();
     state.defaults.streetKey = resolveDefaultStreetKey();
+    renderStreetDirectory();
 
     try {
       console.info('[data] attempting to fetch city_coords.json');
@@ -2710,6 +2715,19 @@ function setupStreetSearch() {
   });
 }
 
+function setupStreetDirectory() {
+  const container = elements.street.directory;
+  if (!container) return;
+  container.addEventListener('click', event => {
+    const button = event.target.closest('[data-street-key]');
+    if (!button) return;
+    event.preventDefault();
+    const key = button.getAttribute('data-street-key');
+    if (!key) return;
+    navigateToStreet(key);
+  });
+}
+
 function setupGraphControls() {
   const layoutSelect = elements.graph.layoutSelect;
   if (layoutSelect) {
@@ -2828,6 +2846,76 @@ function renderStreetResults(matches, { autoSelectFirst = false, query = '' } = 
 
   container.innerHTML = '';
   container.appendChild(list);
+}
+
+function renderStreetDirectory() {
+  const container = elements.street.directory;
+  if (!container) return;
+
+  if (!state.streetIndex || state.streetIndex.size === 0) {
+    container.innerHTML = '<p class="street-directory-placeholder">אין נתונים להצגה.</p>';
+    return;
+  }
+
+  const entries = Array.from(state.streetIndex.entries()).map(([key, value]) => {
+    const display = value?.display || value?.normDisplay || key;
+    const cityCount = Number(value?.cityCount || 0);
+    return { key, display, cityCount };
+  });
+
+  entries.sort((a, b) => {
+    const countDiff = b.cityCount - a.cityCount;
+    if (countDiff !== 0) return countDiff;
+    return HEBREW_COLLATOR.compare(a.display, b.display);
+  });
+
+  const totalStreetCount = entries.length;
+  const richestStreet = entries[0];
+  const statsParts = [`${totalStreetCount.toLocaleString()} שמות מנורמלים`];
+  if (richestStreet) {
+    statsParts.push(
+      `השכיח ביותר: ${richestStreet.display} (${richestStreet.cityCount.toLocaleString()} ערים)`
+    );
+  }
+  statsParts.push('ממוינים לפי מספר ערים (יורד)');
+  const statsText = statsParts.join(' · ');
+
+  const listItems = entries
+    .map(
+      entry => `
+        <li class="street-directory-item">
+          <button type="button" class="street-directory-link" data-street-key="${entry.key}">
+            <span class="street-directory-name">${entry.display}</span>
+            <span class="street-directory-count" aria-label="מופיע ב-${entry.cityCount.toLocaleString()} ערים">${entry.cityCount.toLocaleString()} ערים</span>
+          </button>
+        </li>
+      `
+    )
+    .join('');
+
+  container.innerHTML = `
+    <header class="street-directory-header">
+      <div>
+        <h2>רשימת כל הרחובות</h2>
+        <p class="street-directory-stats">${statsText}</p>
+      </div>
+      <button type="button" class="street-directory-scroll-top" aria-label="חזרה לראש הרשימה">חזרה לראש</button>
+    </header>
+    <div class="street-directory-scroll" tabindex="0">
+      <ul class="street-directory-list" aria-label="כל הרחובות המנורמלים בישראל">
+        ${listItems}
+      </ul>
+    </div>
+  `;
+
+  const scrollButton = container.querySelector('.street-directory-scroll-top');
+  const scrollArea = container.querySelector('.street-directory-scroll');
+  if (scrollButton && scrollArea) {
+    scrollButton.addEventListener('click', () => {
+      scrollArea.scrollTo({ top: 0, behavior: 'smooth' });
+      scrollArea.focus({ preventScroll: true });
+    });
+  }
 }
 
 function renderStreetDetails(streetKey, updateHash = true) {
@@ -2998,6 +3086,7 @@ function handleResize() {
 function init() {
   setupCityHandlers();
   setupStreetSearch();
+  setupStreetDirectory();
   setupGraphControls();
   window.addEventListener('hashchange', onRouteChange);
   window.addEventListener('resize', () => {
