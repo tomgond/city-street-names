@@ -184,6 +184,43 @@ a:hover {
   min-width: 180px;
 }
 
+.graph-controls .control-block {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+.graph-focus {
+  flex: 1 1 280px;
+}
+
+.graph-focus-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.graph-focus .autocomplete {
+  flex: 1;
+  min-width: 240px;
+  position: relative;
+}
+
+.graph-focus-clear {
+  background: rgba(148, 163, 255, 0.12);
+  color: var(--text);
+  padding: 0.5rem 1.1rem;
+  border-radius: 10px;
+  font-weight: 500;
+  transition: background 0.2s ease, color 0.2s ease, transform 0.2s ease;
+}
+
+.graph-focus-clear:hover {
+  background: rgba(34, 211, 238, 0.24);
+  color: #0f172a;
+  transform: translateY(-1px);
+}
+
 .viz-canvas.heatmap {
   min-height: 360px;
 }
