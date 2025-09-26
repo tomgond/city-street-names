@@ -138,6 +138,23 @@
                   <option value="weightedJaccard">Jaccard משוקלל</option>
                   <option value="jaccard">Jaccard רגיל</option>
                 </select>
+                <div class="graph-focus control-block city-autocomplete">
+                  <label for="graph-focus-city">מיקוד הגרף סביב עיר</label>
+                  <div class="graph-focus-row">
+                    <div class="autocomplete">
+                      <input
+                        id="graph-focus-city"
+                        type="search"
+                        placeholder="חפשו עיר למיקוד גרף הדמיון"
+                        autocomplete="off"
+                      />
+                      <div id="graph-focus-suggestions" class="autocomplete-suggestions" hidden></div>
+                    </div>
+                    <button id="graph-focus-clear" type="button" class="graph-focus-clear" hidden>
+                      איפוס
+                    </button>
+                  </div>
+                </div>
               </div>
               <div id="graph-view-canvas" class="viz-canvas network full"></div>
             </section>

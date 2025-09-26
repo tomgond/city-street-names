@@ -47,6 +47,15 @@ const state = {
     layout: 'community',
     metric: 'weightedJaccard'
   },
+  graphFilters: {
+    focusCityId: ''
+  },
+  graphCommunities: {
+    list: [],
+    map: new Map(),
+    total: 0
+  },
+  graphNodeScoreCache: new Map(),
   cityView: {
     autoDefaultUsed: false
   },
@@ -82,7 +91,10 @@ const elements = {
   graph: {
     canvas: document.getElementById('graph-view-canvas'),
     layoutSelect: document.getElementById('graph-layout-select'),
-    metricSelect: document.getElementById('graph-metric-select')
+    metricSelect: document.getElementById('graph-metric-select'),
+    focusInput: document.getElementById('graph-focus-city'),
+    focusSuggestions: document.getElementById('graph-focus-suggestions'),
+    focusClear: document.getElementById('graph-focus-clear')
   },
   dedications: {
     summary: document.getElementById('city-chain-summary'),
@@ -638,6 +650,15 @@ async function loadData() {
     state.cityMap = new Map(state.cities.map(city => [city.id, city]));
     state.cityNameLookup = new Map(state.cities.map(city => [city.name, city]));
     state.graphLayouts.clear();
+    state.graphFilters.focusCityId = '';
+    state.graphNodeScoreCache = new Map();
+    updateGraphCommunityStats();
+    if (elements.graph.focusInput) {
+      setCityInputValue(elements.graph.focusInput, elements.graph.focusSuggestions, '');
+    }
+    if (elements.graph.focusClear) {
+      elements.graph.focusClear.hidden = true;
+    }
 
     const uniquenessList = Array.isArray(uniquenessRaw)
       ? uniquenessRaw
@@ -1057,6 +1078,359 @@ function getTopCities(limit = 40) {
     .slice(0, limit);
 }
 
+const GRAPH_COMMUNITY_OTHER_KEY = '__unassigned__';
+
+function getCommunityKey(city) {
+  if (!city) return GRAPH_COMMUNITY_OTHER_KEY;
+  const value = city.community;
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return `c${value}`;
+  }
+  return GRAPH_COMMUNITY_OTHER_KEY;
+}
+
+function updateGraphCommunityStats() {
+  const statsMap = new Map();
+  state.cities.forEach(city => {
+    if (!city) return;
+    const key = getCommunityKey(city);
+    const communityId = typeof city.community === 'number' && Number.isFinite(city.community)
+      ? city.community
+      : null;
+    if (!statsMap.has(key)) {
+      statsMap.set(key, {
+        key,
+        communityId,
+        size: 0,
+        streetTotal: 0
+      });
+    }
+    const entry = statsMap.get(key);
+    entry.size += 1;
+    entry.streetTotal += Number(city.streetCount || 0);
+  });
+
+  const list = Array.from(statsMap.values());
+  list.sort((a, b) => {
+    const aHasCommunity = a.communityId !== null && a.communityId !== undefined;
+    const bHasCommunity = b.communityId !== null && b.communityId !== undefined;
+    if (aHasCommunity && !bHasCommunity) return -1;
+    if (!aHasCommunity && bHasCommunity) return 1;
+    const sizeDiff = b.size - a.size;
+    if (sizeDiff !== 0) return sizeDiff;
+    const streetDiff = (b.streetTotal || 0) - (a.streetTotal || 0);
+    if (streetDiff !== 0) return streetDiff;
+    if (a.communityId !== null && b.communityId !== null) {
+      return a.communityId - b.communityId;
+    }
+    return a.key.localeCompare(b.key);
+  });
+
+  const total = list.reduce((sum, entry) => sum + entry.size, 0);
+  list.forEach(entry => {
+    entry.share = total ? entry.size / total : 0;
+  });
+
+  state.graphCommunities = {
+    list,
+    map: new Map(list.map(entry => [entry.key, entry])),
+    total
+  };
+}
+
+function computeGraphFocusNeighborhood(cityId, depth = 2) {
+  const normalized = String(cityId || '');
+  if (!normalized || !state.cityMap.has(normalized)) {
+    return null;
+  }
+  const visited = new Set([normalized]);
+  const queue = [{ id: normalized, depth: 0 }];
+
+  while (queue.length) {
+    const current = queue.shift();
+    if (!current) continue;
+    if (current.depth >= depth) continue;
+    const neighbors = state.similarityLookup.get(current.id);
+    if (!neighbors) continue;
+    neighbors.forEach((_, neighborId) => {
+      const key = String(neighborId || '');
+      if (!key || visited.has(key)) return;
+      visited.add(key);
+      queue.push({ id: key, depth: current.depth + 1 });
+    });
+  }
+
+  return visited;
+}
+
+function computeGraphNodeScore(cityId) {
+  const key = String(cityId || '');
+  if (!key) return 0;
+  if (state.graphNodeScoreCache.has(key)) {
+    return state.graphNodeScoreCache.get(key);
+  }
+
+  const city = state.cityMap.get(key);
+  if (!city) {
+    return 0;
+  }
+
+  const baseStreetCount = Number(city.streetCount || 0);
+  const neighbors = state.similarityLookup.get(key) || new Map();
+  let crossCommunityCount = 0;
+  let crossCommunityWeight = 0;
+  let totalWeight = 0;
+  let neighborCount = 0;
+  const cityCommunity = typeof city.community === 'number' && Number.isFinite(city.community)
+    ? city.community
+    : null;
+
+  neighbors.forEach(item => {
+    if (!item) return;
+    const neighborId = String(item.city || item.id || '');
+    if (!neighborId) return;
+    neighborCount += 1;
+    const neighborCity = state.cityMap.get(neighborId);
+    const neighborCommunity = typeof neighborCity?.community === 'number' && Number.isFinite(neighborCity.community)
+      ? neighborCity.community
+      : null;
+    const weight = Number(
+      item.weightedJaccard ?? item.jaccard ?? item.weight ?? 0
+    );
+    if (!Number.isFinite(weight) || weight <= 0) {
+      return;
+    }
+    totalWeight += weight;
+    if (neighborCommunity !== cityCommunity) {
+      crossCommunityCount += 1;
+      crossCommunityWeight += weight;
+    }
+  });
+
+  const diversity = totalWeight > 0 ? crossCommunityWeight / totalWeight : 0;
+  const score =
+    baseStreetCount * 1.8 +
+    neighborCount * 4 +
+    crossCommunityCount * 12 +
+    crossCommunityWeight * 220 +
+    diversity * 160;
+
+  state.graphNodeScoreCache.set(key, score);
+  return score;
+}
+
+function selectGraphNodes({ limit = 50, communityLimit = 6, focusCityId = '' } = {}) {
+  const safeLimit = Math.max(1, Math.floor(limit || 1));
+  const focusId = focusCityId ? String(focusCityId) : '';
+  const validFocusId = focusId && state.cityMap.has(focusId) ? focusId : '';
+  const focusSet = validFocusId ? computeGraphFocusNeighborhood(validFocusId, 2) : null;
+
+  const candidates = focusSet
+    ? Array.from(focusSet)
+        .map(id => state.cityMap.get(id))
+        .filter(Boolean)
+    : state.cities.slice();
+
+  if (!candidates.length) {
+    return [];
+  }
+
+  const communityMap = new Map();
+  candidates.forEach(city => {
+    const key = getCommunityKey(city);
+    if (!communityMap.has(key)) {
+      communityMap.set(key, {
+        key,
+        communityId: typeof city.community === 'number' && Number.isFinite(city.community) ? city.community : null,
+        cities: []
+      });
+    }
+    communityMap.get(key).cities.push(city);
+  });
+
+  const maxCommunities = Math.min(communityLimit, communityMap.size, safeLimit);
+  const stats = state.graphCommunities || { list: [], map: new Map(), total: 0 };
+  const globalOrder = Array.isArray(stats.list) ? stats.list.map(entry => entry.key) : [];
+  const selectedKeys = [];
+  const usedKeys = new Set();
+
+  const tryAddKey = key => {
+    if (!key || usedKeys.has(key)) return;
+    if (!communityMap.has(key)) return;
+    selectedKeys.push(key);
+    usedKeys.add(key);
+  };
+
+  for (const key of globalOrder) {
+    if (selectedKeys.length >= maxCommunities) break;
+    tryAddKey(key);
+  }
+
+  if (validFocusId) {
+    const focusCity = state.cityMap.get(validFocusId);
+    if (focusCity) {
+      const focusKey = getCommunityKey(focusCity);
+      if (!usedKeys.has(focusKey)) {
+        if (selectedKeys.length >= maxCommunities && selectedKeys.length > 0) {
+          const removedKey = selectedKeys.pop();
+          if (removedKey) {
+            usedKeys.delete(removedKey);
+          }
+        }
+        tryAddKey(focusKey);
+      }
+    }
+  }
+
+  if (selectedKeys.length < maxCommunities) {
+    const remaining = Array.from(communityMap.values())
+      .filter(entry => !usedKeys.has(entry.key))
+      .sort((a, b) => b.cities.length - a.cities.length);
+    for (const entry of remaining) {
+      if (selectedKeys.length >= maxCommunities) break;
+      tryAddKey(entry.key);
+    }
+  }
+
+  if (!selectedKeys.length) {
+    communityMap.forEach((_, key) => {
+      if (selectedKeys.length >= maxCommunities) return;
+      tryAddKey(key);
+    });
+  }
+
+  const groups = selectedKeys.slice(0, maxCommunities || selectedKeys.length).map(key => {
+    const entry = communityMap.get(key);
+    entry.cities.sort((a, b) => {
+      const scoreDiff = computeGraphNodeScore(b.id) - computeGraphNodeScore(a.id);
+      if (Math.abs(scoreDiff) > 1e-6) return scoreDiff;
+      const streetDiff = (b.streetCount || 0) - (a.streetCount || 0);
+      if (streetDiff !== 0) return streetDiff;
+      return HEBREW_COLLATOR.compare(a.name || '', b.name || '');
+    });
+    return entry;
+  });
+
+  const availableTotal = groups.reduce((sum, entry) => sum + entry.cities.length, 0);
+  const actualLimit = Math.min(safeLimit, availableTotal);
+  if (!actualLimit) {
+    return [];
+  }
+
+  const baseDenominator = focusSet
+    ? groups.reduce((sum, entry) => sum + entry.cities.length, 0)
+    : groups.reduce((sum, entry) => {
+        const stat = stats.map?.get(entry.key);
+        return sum + (stat ? stat.size : entry.cities.length);
+      }, 0) || groups.reduce((sum, entry) => sum + entry.cities.length, 0);
+
+  const allocations = groups.map(entry => {
+    const stat = stats.map?.get(entry.key);
+    const weight = focusSet ? entry.cities.length : stat ? stat.size : entry.cities.length;
+    const raw = baseDenominator ? (weight / baseDenominator) * actualLimit : actualLimit / groups.length;
+    const capacity = entry.cities.length;
+    const floored = Math.floor(raw);
+    const base = Math.max(1, Math.min(capacity, floored));
+    const remainder = raw - floored;
+    return { entry, base, capacity, remainder, key: entry.key };
+  });
+
+  let assigned = allocations.reduce((sum, item) => sum + item.base, 0);
+  let excess = assigned - actualLimit;
+  if (excess > 0) {
+    const reducible = allocations
+      .filter(item => item.base > 1)
+      .sort((a, b) => {
+        const remainderDiff = a.remainder - b.remainder;
+        if (Math.abs(remainderDiff) > 1e-9) return remainderDiff;
+        const statA = stats.map?.get(a.key);
+        const statB = stats.map?.get(b.key);
+        const sizeDiff = (statA?.size || a.capacity) - (statB?.size || b.capacity);
+        if (sizeDiff !== 0) return sizeDiff;
+        return 0;
+      });
+    for (const item of reducible) {
+      if (excess <= 0) break;
+      const reducibleAmount = Math.min(item.base - 1, excess);
+      if (reducibleAmount <= 0) continue;
+      item.base -= reducibleAmount;
+      excess -= reducibleAmount;
+    }
+    assigned = allocations.reduce((sum, item) => sum + item.base, 0);
+  }
+
+  let remaining = Math.max(0, actualLimit - assigned);
+  if (remaining > 0) {
+    const sortedAllocations = () =>
+      allocations
+        .filter(item => item.base < item.capacity)
+        .sort((a, b) => {
+          const spareA = a.capacity - a.base;
+          const spareB = b.capacity - b.base;
+          if (spareA === 0 && spareB === 0) return 0;
+          if (spareA === 0) return 1;
+          if (spareB === 0) return -1;
+          const remainderDiff = b.remainder - a.remainder;
+          if (Math.abs(remainderDiff) > 1e-9) return remainderDiff;
+          const statA = stats.map?.get(a.key);
+          const statB = stats.map?.get(b.key);
+          const sizeDiff = (statB?.size || b.capacity) - (statA?.size || a.capacity);
+          if (sizeDiff !== 0) return sizeDiff;
+          return 0;
+        });
+
+    while (remaining > 0) {
+      const candidates = sortedAllocations();
+      if (!candidates.length) break;
+      let distributed = false;
+      for (const item of candidates) {
+        if (item.base >= item.capacity) continue;
+        item.base += 1;
+        remaining -= 1;
+        distributed = true;
+        if (remaining === 0) break;
+      }
+      if (!distributed) break;
+    }
+  }
+
+  const selection = [];
+  allocations.forEach(item => {
+    if (!item) return;
+    const chosen = item.entry.cities.slice(0, item.base);
+    selection.push(...chosen);
+  });
+
+  const seen = new Set();
+  const result = [];
+  selection.forEach(city => {
+    const id = String(city.id);
+    if (seen.has(id)) return;
+    seen.add(id);
+    result.push(city);
+  });
+
+  if (validFocusId && !seen.has(validFocusId)) {
+    const focusCity = state.cityMap.get(validFocusId);
+    if (focusCity) {
+      result.push(focusCity);
+    }
+  }
+
+  if (result.length > actualLimit) {
+    result.sort((a, b) => {
+      const scoreDiff = computeGraphNodeScore(b.id) - computeGraphNodeScore(a.id);
+      if (Math.abs(scoreDiff) > 1e-6) return scoreDiff;
+      const streetDiff = (b.streetCount || 0) - (a.streetCount || 0);
+      if (streetDiff !== 0) return streetDiff;
+      return HEBREW_COLLATOR.compare(a.name || '', b.name || '');
+    });
+    result.length = actualLimit;
+  }
+
+  return result;
+}
+
 function createCommunityColorScale(values) {
   const unique = Array.from(new Set(values.filter(value => value !== null && value !== undefined)))
     .sort((a, b) => a - b);
@@ -1093,7 +1467,9 @@ function renderNetworkGraph(target, options = {}) {
     height: forcedHeight = null,
     cacheKey = '',
     layout = (state.graphSettings && state.graphSettings.layout) || 'force',
-    metric = (state.graphSettings && state.graphSettings.metric) || 'weightedJaccard'
+    metric = (state.graphSettings && state.graphSettings.metric) || 'weightedJaccard',
+    communityLimit = 6,
+    focusCityId = undefined
   } = options;
 
   let metricKey = typeof metric === 'string' ? metric : 'weightedJaccard';
@@ -1107,19 +1483,32 @@ function renderNetworkGraph(target, options = {}) {
 
   const metricDisplayName = metricKey === 'weightedJaccard' ? 'Jaccard משוקלל' : 'Jaccard רגיל';
 
-  console.info('[viz] renderNetworkGraph start', { limit, maxLinks, cacheKey, layout, metric: metricKey });
+  const focusId = focusCityId ? String(focusCityId) : state.graphFilters.focusCityId || '';
 
-  const cities = getTopCities(limit);
+  console.info('[viz] renderNetworkGraph start', {
+    limit,
+    maxLinks,
+    cacheKey,
+    layout,
+    metric: metricKey,
+    communityLimit,
+    focusCityId: focusId || null
+  });
+
+  const cities = selectGraphNodes({ limit, communityLimit, focusCityId: focusId });
   if (!cities.length) {
-    container.innerHTML = '<p class="empty-state">לא נמצאו ערים להצגה.</p>';
+    const message = focusId
+      ? 'לא נמצאו ערים במרחק של עד שתי קפיצות מהעיר שנבחרה.'
+      : 'לא נמצאו ערים להצגה.';
+    container.innerHTML = `<p class="empty-state">${message}</p>`;
     return;
   }
 
   container.innerHTML = '';
 
-  const allowed = new Set(cities.map(city => city.id));
+  const allowed = new Set(cities.map(city => String(city.id)));
   const nodes = cities.map(city => ({
-    id: city.id,
+    id: String(city.id),
     name: city.name,
     streetCount: city.streetCount,
     community: typeof city.community === 'number' ? city.community : null
@@ -1179,8 +1568,8 @@ function renderNetworkGraph(target, options = {}) {
     ensureNeighborSet(targetId).add(sourceId);
   });
 
-  const baseLayoutKey = cacheKey || `${limit}-${maxLinks}`;
-  const layoutKey = `${baseLayoutKey}|${layoutMode}|${metricKey}`;
+  const baseLayoutKey = cacheKey || `${limit}-${maxLinks}-${communityLimit}`;
+  const layoutKey = `${baseLayoutKey}|${layoutMode}|${metricKey}|${focusId || 'all'}`;
   const cachedLayout = state.graphLayouts.get(layoutKey) || null;
   if (cachedLayout) {
     nodes.forEach(node => {
@@ -1510,7 +1899,8 @@ function renderNetworkGraph(target, options = {}) {
     links: trimmedLinks.length,
     communities: communityScale ? communityScale.domain().length : 0,
     cacheHit: Boolean(cachedLayout),
-    metric: metricKey
+    metric: metricKey,
+    focusCityId: focusId || null
   });
 }
 function renderNetworkPreview(force = false) {
@@ -1518,11 +1908,13 @@ function renderNetworkPreview(force = false) {
   if (!container) return;
   if (!force && state.rendered.networkPreview) return;
   renderNetworkGraph(container, {
-    limit: 40,
-    maxLinks: 240,
+    limit: 100,
+    maxLinks: 900,
     cacheKey: 'preview',
     layout: state.graphSettings.layout,
-    metric: state.graphSettings.metric
+    metric: state.graphSettings.metric,
+    communityLimit: 6,
+    focusCityId: state.graphFilters.focusCityId
   });
   state.rendered.networkPreview = true;
 }
@@ -1534,12 +1926,14 @@ function renderGraphView(force = false) {
   const bounds = container.getBoundingClientRect();
   const height = Math.max(bounds.height || container.clientHeight || 0, 620);
   renderNetworkGraph(container, {
-    limit: 120,
-    maxLinks: 720,
+    limit: 300,
+    maxLinks: 1800,
     height,
     cacheKey: 'graph-full',
     layout: state.graphSettings.layout,
-    metric: state.graphSettings.metric
+    metric: state.graphSettings.metric,
+    communityLimit: 6,
+    focusCityId: state.graphFilters.focusCityId
   });
   state.rendered.graphFull = true;
 }
@@ -2761,6 +3155,58 @@ function setupGraphControls() {
       if (parseHash().view === 'graph') {
         renderGraphView(true);
       }
+    });
+  }
+
+  const focusInput = elements.graph.focusInput;
+  const focusSuggestions = elements.graph.focusSuggestions;
+  const focusClear = elements.graph.focusClear;
+
+  if (focusClear) {
+    focusClear.hidden = !state.graphFilters.focusCityId;
+  }
+
+  const refreshGraphs = () => {
+    state.graphLayouts.clear();
+    state.rendered.graphFull = false;
+    state.rendered.networkPreview = false;
+    if (!state.ready) return;
+    renderNetworkPreview(true);
+    if (parseHash().view === 'graph') {
+      renderGraphView(true);
+    }
+  };
+
+  if (focusInput && focusSuggestions) {
+    wireCityAutocomplete(focusInput, focusSuggestions, {
+      onSelect: city => {
+        if (!city) return;
+        state.graphFilters.focusCityId = String(city.id);
+        if (focusClear) {
+          focusClear.hidden = false;
+        }
+        refreshGraphs();
+      },
+      onClear: () => {
+        if (!state.graphFilters.focusCityId) return;
+        state.graphFilters.focusCityId = '';
+        if (focusClear) {
+          focusClear.hidden = true;
+        }
+        refreshGraphs();
+      }
+    });
+  }
+
+  if (focusClear) {
+    focusClear.addEventListener('click', () => {
+      if (!state.graphFilters.focusCityId) return;
+      state.graphFilters.focusCityId = '';
+      if (focusInput) {
+        setCityInputValue(focusInput, focusSuggestions, '');
+      }
+      focusClear.hidden = true;
+      refreshGraphs();
     });
   }
 }
