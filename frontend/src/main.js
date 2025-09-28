@@ -64,6 +64,19 @@ const state = {
     streetKey: ''
   },
   streetKeyCache: new Map(),
+  streetDirectory: {
+    entries: [],
+    filteredEntries: [],
+    totalCount: 0,
+    richestStreet: null,
+    query: '',
+    renderedCount: 0,
+    listElement: null,
+    scrollArea: null,
+    sentinel: null,
+    statsElement: null,
+    observer: null
+  },
   rendered: {
     networkPreview: false,
     heatmap: false,
@@ -76,6 +89,8 @@ const HEBREW_COLLATOR = new Intl.Collator('he', {
   sensitivity: 'base',
   numeric: true
 });
+
+const STREET_DIRECTORY_BATCH_SIZE = 150;
 
 const elements = {
   views: Array.from(document.querySelectorAll('[data-view]')),
@@ -116,7 +131,7 @@ const elements = {
   street: {
     searchInput: document.getElementById('street-search'),
     searchButton: document.getElementById('street-search-btn'),
-    results: document.getElementById('street-results'),
+    clearButton: document.getElementById('street-search-clear'),
     details: document.getElementById('street-details'),
     directory: document.getElementById('street-directory')
   }
@@ -585,6 +600,7 @@ function onRouteChange() {
       const entry = state.streetIndex.get(targetKey);
       if (entry && elements.street.searchInput) {
         elements.street.searchInput.value = entry.display;
+        updateStreetSearchControls();
       }
       const expectedHash = '#/street/' + targetKey;
       if (window.location.hash !== expectedHash) {
@@ -3134,20 +3150,60 @@ function setupCityHandlers() {
 }
 
 function setupStreetSearch() {
-  const performSearch = () => {
-    const query = elements.street.searchInput.value.trim();
-    if (!query || !state.fuse) return;
-    const matches = state.fuse.search(query).slice(0, 20);
-    renderStreetResults(matches, { autoSelectFirst: true, query });
+  const input = elements.street.searchInput;
+  if (!input) return;
+
+  const searchButton = elements.street.searchButton;
+  const clearButton = elements.street.clearButton;
+  let debounceTimer = null;
+
+  const triggerFilter = () => {
+    if (debounceTimer) {
+      clearTimeout(debounceTimer);
+      debounceTimer = null;
+    }
+    applyStreetFilter(input.value || '');
   };
 
-  elements.street.searchButton.addEventListener('click', performSearch);
-  elements.street.searchInput.addEventListener('keydown', event => {
+  if (searchButton) {
+    searchButton.addEventListener('click', () => {
+      triggerFilter();
+      input.focus({ preventScroll: true });
+    });
+  }
+
+  input.addEventListener('keydown', event => {
     if (event.key === 'Enter') {
       event.preventDefault();
-      performSearch();
+      triggerFilter();
     }
   });
+
+  input.addEventListener('input', () => {
+    if (debounceTimer) {
+      clearTimeout(debounceTimer);
+    }
+    debounceTimer = setTimeout(() => {
+      debounceTimer = null;
+      applyStreetFilter(input.value || '');
+    }, 180);
+  });
+
+  if (clearButton) {
+    clearButton.addEventListener('click', () => {
+      if (!input.value) {
+        applyStreetFilter('');
+        input.focus({ preventScroll: true });
+        return;
+      }
+      input.value = '';
+      applyStreetFilter('');
+      input.focus({ preventScroll: true });
+    });
+    clearButton.disabled = true;
+  }
+
+  updateStreetSearchControls();
 }
 
 function setupStreetDirectory() {
@@ -3278,74 +3334,34 @@ function navigateToStreet(streetKey, { scroll = true } = {}) {
 }
 
 
-function renderStreetResults(matches, { autoSelectFirst = false, query = '' } = {}) {
-  const container = elements.street.results;
-  if (!container) return;
-  if (!matches.length) {
-    container.innerHTML = '<p>לא נמצאו תוצאות תואמות.</p>';
-    return;
-  }
-
-  const enriched = matches
-    .map(result => {
-      const data = result.item;
-      const resolvedKey = resolveStreetKey(data.key);
-      if (!resolvedKey) return null;
-      const entry = state.streetIndex.get(resolvedKey);
-      if (!entry) return null;
-      return { entry, resolvedKey };
-    })
-    .filter(item => item !== null);
-
-  if (!enriched.length) {
-    container.innerHTML = '<p>לא נמצאו תוצאות תואמות.</p>';
-    return;
-  }
-
-  enriched.sort((a, b) => {
-    const countDiff = (b.entry.cityCount || 0) - (a.entry.cityCount || 0);
-    if (countDiff !== 0) return countDiff;
-    return HEBREW_COLLATOR.compare(a.entry.display, b.entry.display);
-  });
-
-  const list = document.createElement('ul');
-  enriched.forEach(({ entry, resolvedKey }) => {
-    const li = document.createElement('li');
-    const button = document.createElement('button');
-    button.type = 'button';
-    button.className = 'street-result-link';
-    button.dataset.key = resolvedKey;
-    button.innerHTML = `
-      <span class="street-result-name">${entry.display}</span>
-      <span class="street-result-meta">מופיע ב-${entry.cityCount.toLocaleString()} ערים</span>
-    `;
-    const selectStreet = () => navigateToStreet(resolvedKey);
-    button.addEventListener('click', selectStreet);
-    button.addEventListener('keydown', event => {
-      if (event.key === 'Enter' || event.key === ' ') {
-        event.preventDefault();
-        selectStreet();
-      }
-    });
-    li.appendChild(button);
-    list.appendChild(li);
-  });
-
-  container.innerHTML = '';
-  container.appendChild(list);
-}
-
 function renderStreetDirectory() {
   const container = elements.street.directory;
   if (!container) return;
 
   if (!state.streetIndex || state.streetIndex.size === 0) {
     container.innerHTML = '<p class="street-directory-placeholder">אין נתונים להצגה.</p>';
+    state.streetDirectory.entries = [];
+    state.streetDirectory.filteredEntries = [];
+    state.streetDirectory.totalCount = 0;
+    state.streetDirectory.richestStreet = null;
+    state.streetDirectory.listElement = null;
+    state.streetDirectory.scrollArea = null;
+    state.streetDirectory.sentinel = null;
+    state.streetDirectory.statsElement = null;
+    state.streetDirectory.renderedCount = 0;
+    if (state.streetDirectory.observer) {
+      state.streetDirectory.observer.disconnect();
+      state.streetDirectory.observer = null;
+    }
+    updateStreetDirectoryStats();
+    updateStreetSearchControls();
     return;
   }
 
   const entries = Array.from(state.streetIndex.entries()).map(([key, value]) => {
-    const display = value?.display || value?.normDisplay || key;
+    const displayName = typeof value?.display === 'string' ? value.display.trim() : '';
+    const normalizedName = typeof value?.normDisplay === 'string' ? value.normDisplay.trim() : '';
+    const display = displayName || normalizedName || key;
     const cityCount = Number(value?.cityCount || 0);
     return { key, display, cityCount };
   });
@@ -3356,53 +3372,265 @@ function renderStreetDirectory() {
     return HEBREW_COLLATOR.compare(a.display, b.display);
   });
 
-  const totalStreetCount = entries.length;
-  const richestStreet = entries[0];
-  const statsParts = [`${totalStreetCount.toLocaleString()} שמות מנורמלים`];
-  if (richestStreet) {
-    statsParts.push(
-      `השכיח ביותר: ${richestStreet.display} (${richestStreet.cityCount.toLocaleString()} ערים)`
-    );
-  }
-  statsParts.push('ממוינים לפי מספר ערים (יורד)');
-  const statsText = statsParts.join(' · ');
+  const previousQuery =
+    state.streetDirectory.query || (elements.street.searchInput ? elements.street.searchInput.value : '');
 
-  const listItems = entries
-    .map(
-      entry => `
-        <li class="street-directory-item">
-          <button type="button" class="street-directory-link" data-street-key="${entry.key}">
-            <span class="street-directory-name">${entry.display}</span>
-            <span class="street-directory-count" aria-label="מופיע ב-${entry.cityCount.toLocaleString()} ערים">${entry.cityCount.toLocaleString()} ערים</span>
-          </button>
-        </li>
-      `
-    )
-    .join('');
+  state.streetDirectory.entries = entries;
+  state.streetDirectory.filteredEntries = entries;
+  state.streetDirectory.totalCount = entries.length;
+  state.streetDirectory.richestStreet = entries[0] || null;
+  state.streetDirectory.renderedCount = 0;
 
   container.innerHTML = `
     <header class="street-directory-header">
       <div>
         <h2>רשימת כל הרחובות</h2>
-        <p class="street-directory-stats">${statsText}</p>
+        <p class="street-directory-stats" data-street-directory-stats></p>
       </div>
       <button type="button" class="street-directory-scroll-top" aria-label="חזרה לראש הרשימה">חזרה לראש</button>
     </header>
     <div class="street-directory-scroll" tabindex="0">
-      <ul class="street-directory-list" aria-label="כל הרחובות המנורמלים בישראל">
-        ${listItems}
-      </ul>
+      <ul class="street-directory-list" aria-label="כל הרחובות המנורמלים בישראל"></ul>
+      <div class="street-directory-sentinel" aria-hidden="true"></div>
     </div>
   `;
 
-  const scrollButton = container.querySelector('.street-directory-scroll-top');
+  const statsElement = container.querySelector('[data-street-directory-stats]');
+  const listElement = container.querySelector('.street-directory-list');
   const scrollArea = container.querySelector('.street-directory-scroll');
+  const sentinel = container.querySelector('.street-directory-sentinel');
+
+  state.streetDirectory.statsElement = statsElement;
+  state.streetDirectory.listElement = listElement;
+  state.streetDirectory.scrollArea = scrollArea;
+  state.streetDirectory.sentinel = sentinel;
+
+  if (state.streetDirectory.observer) {
+    state.streetDirectory.observer.disconnect();
+  }
+
+  if (scrollArea && sentinel) {
+    const observer = new IntersectionObserver(
+      observerEntries => {
+        observerEntries.forEach(entry => {
+          if (entry.isIntersecting) {
+            appendStreetDirectoryChunk();
+          }
+        });
+      },
+      { root: scrollArea, rootMargin: '0px 0px 320px 0px' }
+    );
+    observer.observe(sentinel);
+    state.streetDirectory.observer = observer;
+  } else {
+    state.streetDirectory.observer = null;
+  }
+
+  const scrollButton = container.querySelector('.street-directory-scroll-top');
   if (scrollButton && scrollArea) {
     scrollButton.addEventListener('click', () => {
       scrollArea.scrollTo({ top: 0, behavior: 'smooth' });
       scrollArea.focus({ preventScroll: true });
     });
   }
+
+  applyStreetFilter(previousQuery || '');
+}
+
+function updateStreetSearchControls() {
+  const clearButton = elements.street.clearButton;
+  if (!clearButton) return;
+  const inputValue = elements.street.searchInput ? elements.street.searchInput.value.trim() : '';
+  clearButton.disabled = !state.streetDirectory.query && !inputValue;
+}
+
+function updateStreetDirectoryStats() {
+  const statsElement = state.streetDirectory.statsElement;
+  if (!statsElement) return;
+
+  if (!state.streetDirectory.totalCount) {
+    statsElement.textContent = 'אין נתונים להצגה.';
+    return;
+  }
+
+  const parts = [];
+  if (state.streetDirectory.query) {
+    const filteredCount = state.streetDirectory.filteredEntries.length;
+    parts.push(`${filteredCount.toLocaleString()} תוצאות עבור "${state.streetDirectory.query}"`);
+    parts.push(`מתוך ${state.streetDirectory.totalCount.toLocaleString()} שמות מנורמלים`);
+    const topMatch = state.streetDirectory.filteredEntries[0];
+    if (topMatch) {
+      parts.push(
+        `התוצאה השכיחה ביותר: ${topMatch.display} (${topMatch.cityCount.toLocaleString()} ערים)`
+      );
+    }
+  } else {
+    parts.push(`${state.streetDirectory.totalCount.toLocaleString()} שמות מנורמלים`);
+    if (state.streetDirectory.richestStreet) {
+      parts.push(
+        `השכיח ביותר: ${state.streetDirectory.richestStreet.display} (${state.streetDirectory.richestStreet.cityCount.toLocaleString()} ערים)`
+      );
+    }
+    parts.push('ממוינים לפי מספר ערים (יורד)');
+  }
+
+  statsElement.textContent = parts.join(' · ');
+}
+
+function resetStreetDirectoryRender() {
+  const directory = state.streetDirectory;
+  if (!directory.listElement) return;
+
+  if (directory.observer && directory.sentinel) {
+    directory.observer.unobserve(directory.sentinel);
+  }
+
+  directory.listElement.innerHTML = '';
+  directory.renderedCount = 0;
+
+  if (!Array.isArray(directory.filteredEntries) || directory.filteredEntries.length === 0) {
+    const emptyItem = document.createElement('li');
+    emptyItem.className = 'street-directory-placeholder';
+    emptyItem.textContent = directory.query
+      ? 'לא נמצאו רחובות תואמים.'
+      : 'אין רחובות להצגה.';
+    directory.listElement.appendChild(emptyItem);
+    return;
+  }
+
+  appendStreetDirectoryChunk();
+
+  if (directory.scrollArea) {
+    let guard = 0;
+    while (
+      directory.renderedCount < directory.filteredEntries.length &&
+      directory.scrollArea.scrollHeight <= directory.scrollArea.clientHeight + 80 &&
+      guard < 12
+    ) {
+      const before = directory.renderedCount;
+      appendStreetDirectoryChunk();
+      if (directory.renderedCount === before) {
+        break;
+      }
+      guard += 1;
+    }
+  }
+
+  if (directory.observer && directory.sentinel && directory.renderedCount < directory.filteredEntries.length) {
+    directory.observer.observe(directory.sentinel);
+  }
+}
+
+function appendStreetDirectoryChunk() {
+  const directory = state.streetDirectory;
+  if (!directory.listElement || !Array.isArray(directory.filteredEntries)) return;
+
+  if (directory.renderedCount >= directory.filteredEntries.length) {
+    if (directory.observer && directory.sentinel) {
+      directory.observer.unobserve(directory.sentinel);
+    }
+    return;
+  }
+
+  const nextCount = Math.min(
+    directory.filteredEntries.length,
+    directory.renderedCount + STREET_DIRECTORY_BATCH_SIZE
+  );
+  const fragment = document.createDocumentFragment();
+
+  for (let index = directory.renderedCount; index < nextCount; index += 1) {
+    const entry = directory.filteredEntries[index];
+    if (!entry) continue;
+    const listItem = document.createElement('li');
+    listItem.className = 'street-directory-item';
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'street-directory-link';
+    button.dataset.streetKey = entry.key;
+
+    const nameSpan = document.createElement('span');
+    nameSpan.className = 'street-directory-name';
+    nameSpan.textContent = entry.display;
+
+    const countSpan = document.createElement('span');
+    countSpan.className = 'street-directory-count';
+    countSpan.setAttribute('aria-label', `מופיע ב-${entry.cityCount.toLocaleString()} ערים`);
+    countSpan.textContent = `${entry.cityCount.toLocaleString()} ערים`;
+
+    button.append(nameSpan, countSpan);
+    listItem.appendChild(button);
+    fragment.appendChild(listItem);
+  }
+
+  directory.listElement.appendChild(fragment);
+  directory.renderedCount = nextCount;
+
+  if (directory.observer && directory.sentinel) {
+    directory.observer.unobserve(directory.sentinel);
+    if (directory.renderedCount < directory.filteredEntries.length) {
+      directory.observer.observe(directory.sentinel);
+    }
+  }
+}
+
+function applyStreetFilter(rawQuery) {
+  const directory = state.streetDirectory;
+  const query = typeof rawQuery === 'string' ? rawQuery.trim() : '';
+  directory.query = query;
+
+  if (!Array.isArray(directory.entries) || directory.entries.length === 0) {
+    directory.filteredEntries = [];
+    directory.renderedCount = 0;
+    resetStreetDirectoryRender();
+    updateStreetDirectoryStats();
+    updateStreetSearchControls();
+    return;
+  }
+
+  let filtered = directory.entries;
+  if (query) {
+    if (state.fuse) {
+      const results = state.fuse.search(query);
+      if (results.length) {
+        const keySet = new Set(
+          results
+            .map(result => {
+              if (!result) return null;
+              if (result.item && typeof result.item === 'object') {
+                return result.item.key || result.item.normalized || null;
+              }
+              if (typeof result.item === 'string') return result.item;
+              return null;
+            })
+            .filter(Boolean)
+        );
+        filtered = directory.entries.filter(entry => keySet.has(entry.key));
+      } else {
+        const baseQuery = query.toLowerCase();
+        const normalizedQuery = query.replace(/\s+/g, '').toLowerCase();
+        filtered = directory.entries.filter(entry => {
+          const display = (entry.display || '').toLowerCase();
+          const normalized = (entry.key || '').toLowerCase();
+          return display.includes(baseQuery) || normalized.includes(normalizedQuery);
+        });
+      }
+    } else {
+      const baseQuery = query.toLowerCase();
+      const normalizedQuery = query.replace(/\s+/g, '').toLowerCase();
+      filtered = directory.entries.filter(entry => {
+        const display = (entry.display || '').toLowerCase();
+        const normalized = (entry.key || '').toLowerCase();
+        return display.includes(baseQuery) || normalized.includes(normalizedQuery);
+      });
+    }
+  }
+
+  directory.filteredEntries = filtered;
+  directory.renderedCount = 0;
+
+  resetStreetDirectoryRender();
+  updateStreetDirectoryStats();
+  updateStreetSearchControls();
 }
 
 function renderStreetDetails(streetKey, updateHash = true) {
@@ -3422,6 +3650,7 @@ function renderStreetDetails(streetKey, updateHash = true) {
   state.streetKeyCache.set(normalizedKey, normalizedKey);
   if (elements.street.searchInput) {
     elements.street.searchInput.value = entry.display;
+    updateStreetSearchControls();
   }
   if (updateHash) {
     const targetHash = `#/street/${normalizedKey}`;
