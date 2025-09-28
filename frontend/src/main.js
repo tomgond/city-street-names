@@ -1219,6 +1219,44 @@ function computeGraphNodeScore(cityId) {
   return score;
 }
 
+function extractNeighborWeight(neighbor) {
+  if (!neighbor) return 0;
+  const weighted = Number(neighbor.weightedJaccard);
+  if (Number.isFinite(weighted) && weighted > 0) {
+    return weighted;
+  }
+  const jaccard = Number(neighbor.jaccard);
+  if (Number.isFinite(jaccard) && jaccard > 0) {
+    return jaccard;
+  }
+  return 0;
+}
+
+function cityHasGraphConnections(cityId) {
+  const key = String(cityId || '');
+  if (!key) return false;
+
+  if (state.similarityLookup instanceof Map) {
+    const neighbors = state.similarityLookup.get(key);
+    if (neighbors && neighbors.size) {
+      for (const neighbor of neighbors.values()) {
+        if (extractNeighborWeight(neighbor) > 0) {
+          return true;
+        }
+      }
+    }
+  }
+
+  const fallback = state.similarityTop.get(key) || [];
+  for (const neighbor of fallback) {
+    if (extractNeighborWeight(neighbor) > 0) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
 function selectGraphNodes({ limit = 50, communityLimit = 6, focusCityId = '' } = {}) {
   const safeLimit = Math.max(1, Math.floor(limit || 1));
   const focusId = focusCityId ? String(focusCityId) : '';
@@ -1238,6 +1276,9 @@ function selectGraphNodes({ limit = 50, communityLimit = 6, focusCityId = '' } =
   const communityMap = new Map();
   candidates.forEach(city => {
     const key = getCommunityKey(city);
+    if (!cityHasGraphConnections(city?.id)) {
+      return;
+    }
     if (!communityMap.has(key)) {
       communityMap.set(key, {
         key,
@@ -1412,7 +1453,7 @@ function selectGraphNodes({ limit = 50, communityLimit = 6, focusCityId = '' } =
 
   if (validFocusId && !seen.has(validFocusId)) {
     const focusCity = state.cityMap.get(validFocusId);
-    if (focusCity) {
+    if (focusCity && cityHasGraphConnections(focusCity.id)) {
       result.push(focusCity);
     }
   }
@@ -1908,7 +1949,7 @@ function renderNetworkPreview(force = false) {
   if (!container) return;
   if (!force && state.rendered.networkPreview) return;
   renderNetworkGraph(container, {
-    limit: 100,
+    limit: 50,
     maxLinks: 900,
     cacheKey: 'preview',
     layout: state.graphSettings.layout,
@@ -1926,7 +1967,7 @@ function renderGraphView(force = false) {
   const bounds = container.getBoundingClientRect();
   const height = Math.max(bounds.height || container.clientHeight || 0, 620);
   renderNetworkGraph(container, {
-    limit: 300,
+    limit: 100,
     maxLinks: 1800,
     height,
     cacheKey: 'graph-full',
