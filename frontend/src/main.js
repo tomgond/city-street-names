@@ -79,7 +79,6 @@ const state = {
   },
   rendered: {
     networkPreview: false,
-    heatmap: false,
     graphFull: false,
     cityHonors: false
   }
@@ -98,7 +97,6 @@ const elements = {
   toast: document.getElementById('global-toast'),
   home: {
     network: document.getElementById('network-preview'),
-    heatmap: document.getElementById('similarity-heatmap'),
     topList: document.getElementById('top-cities-list'),
     distinctivePanel: document.getElementById('distinctive-cities-panel'),
     distinctiveList: document.getElementById('distinctive-cities-list')
@@ -774,7 +772,6 @@ async function loadData() {
         })
       : null;
     state.rendered.networkPreview = false;
-    state.rendered.heatmap = false;
     state.rendered.graphFull = false;
     state.rendered.cityHonors = false;
 
@@ -1054,9 +1051,75 @@ function prepareCityHonorGraph(raw) {
   finalNodes.push(...aggregatedNodes);
   finalLinks.push(...aggregatedLinks);
 
+  const adjacency = new Map();
+  finalNodes.forEach(node => {
+    const key = String(node.id);
+    if (!adjacency.has(key)) {
+      adjacency.set(key, new Set());
+    }
+  });
+
+  finalLinks.forEach(link => {
+    const sourceId = String(link.source);
+    const targetId = String(link.target);
+    if (!adjacency.has(sourceId)) {
+      adjacency.set(sourceId, new Set());
+    }
+    if (!adjacency.has(targetId)) {
+      adjacency.set(targetId, new Set());
+    }
+    adjacency.get(sourceId).add(targetId);
+    adjacency.get(targetId).add(sourceId);
+  });
+
+  const visited = new Set();
+  let largestComponent = new Set();
+
+  adjacency.forEach((_, nodeId) => {
+    if (visited.has(nodeId)) {
+      return;
+    }
+    const component = new Set();
+    const queue = [nodeId];
+    while (queue.length) {
+      const current = queue.shift();
+      if (!current || visited.has(current)) {
+        continue;
+      }
+      visited.add(current);
+      component.add(current);
+      const neighbors = adjacency.get(current);
+      if (!neighbors) {
+        continue;
+      }
+      neighbors.forEach(neighborId => {
+        const neighborKey = String(neighborId);
+        if (!neighborKey || visited.has(neighborKey) || component.has(neighborKey)) {
+          return;
+        }
+        queue.push(neighborKey);
+      });
+    }
+    if (component.size > largestComponent.size) {
+      largestComponent = component;
+    }
+  });
+
+  if (!largestComponent.size) {
+    largestComponent = new Set(finalNodes.map(node => String(node.id)));
+  }
+
+  const componentNodes = finalNodes.filter(node => largestComponent.has(String(node.id)));
+  const componentNodeIds = new Set(componentNodes.map(node => String(node.id)));
+  const componentLinks = finalLinks.filter(link => {
+    const sourceId = String(link.source);
+    const targetId = String(link.target);
+    return componentNodeIds.has(sourceId) && componentNodeIds.has(targetId);
+  });
+
   const preparedGraph = {
-    nodes: finalNodes,
-    links: finalLinks,
+    nodes: componentNodes,
+    links: componentLinks,
     stats
   };
 
@@ -1075,12 +1138,10 @@ function prepareCityHonorGraph(raw) {
 function renderHome(force = false) {
   if (force) {
     state.rendered.networkPreview = false;
-    state.rendered.heatmap = false;
   }
   console.time('[viz] renderHome');
   console.info('[viz] renderHome start');
   renderNetworkPreview(force);
-  renderHeatmap(force);
   renderTopCitiesList();
   renderDistinctiveCities();
   console.info('[viz] renderHome end');
@@ -1788,7 +1849,7 @@ function renderNetworkGraph(target, options = {}) {
     .text(d => d.name)
     .attr('text-anchor', 'middle')
     .attr('alignment-baseline', 'middle')
-    .attr('fill', '#e2e8f0')
+    .attr('fill', '#0f172a')
     .attr('font-size', '0.8rem')
     .attr('pointer-events', 'none');
 
@@ -2446,140 +2507,6 @@ function renderCityDedicationView(force = false) {
 }
 
 
-function renderHeatmap(force = false) {
-  const container = elements.home.heatmap;
-  if (!container) {
-    console.warn('[viz] heatmap container missing');
-    return;
-  }
-  if (!force && state.rendered.heatmap) {
-    return;
-  }
-  console.info('[viz] renderHeatmap start');
-  container.innerHTML = '';
-
-  const cities = getTopCities(5);
-  if (!cities.length) {
-    container.innerHTML = '<p class="empty-state">לא נמצאו ערים לחישוב מטריצה.</p>';
-    return;
-  }
-
-  const data = [];
-  cities.forEach((rowCity, rowIndex) => {
-    cities.forEach((colCity, colIndex) => {
-      const similarity = getSimilarityMetric(rowCity.id, colCity.id, 'weightedJaccard');
-      data.push({
-        x: colIndex,
-        y: rowIndex,
-        value: similarity,
-        row: rowCity,
-        column: colCity
-      });
-    });
-  });
-
-  const size = Math.min(container.clientWidth || 600, 620);
-  const margin = { top: 60, right: 20, bottom: 20, left: 20 };
-  const cellSize = (size - margin.left - margin.right) / cities.length;
-
-  const svg = d3
-    .select(container)
-    .append('svg')
-    .attr('width', size)
-    .attr('height', size);
-
-  console.debug('[viz] heatmap svg size', size);
-
-  const group = svg
-    .append('g')
-    .attr('transform', `translate(${margin.left},${margin.top})`);
-
-  const color = d3
-    .scaleSequential(d3.interpolateYlGnBu)
-    .domain([0, d3.max(data, d => d.value) || 0.05]);
-
-  const tooltip = d3
-    .select(container)
-    .append('div')
-    .attr('class', 'viz-tooltip');
-
-  group
-    .selectAll('rect')
-    .data(data)
-    .enter()
-    .append('rect')
-    .attr('x', d => d.x * cellSize)
-    .attr('y', d => d.y * cellSize)
-    .attr('width', cellSize - 2)
-    .attr('height', cellSize - 2)
-    .attr('rx', 6)
-    .attr('ry', 6)
-    .attr('fill', d => (d.value > 0 ? color(d.value) : 'rgba(148,163,255,0.1)'))
-    .on('mouseenter', (event, d) => {
-      tooltip
-        .style('opacity', 1)
-        .html(`
-          <div><strong>${d.row.name}</strong> ⇆ <strong>${d.column.name}</strong></div>
-          <div>מדד דמיון: ${d.value.toFixed(3)}</div>
-        `);
-    })
-    .on('mousemove', event => {
-      tooltip
-        .style('top', `${event.offsetY - 10}px`)
-        .style('left', `${event.offsetX - 10}px`);
-    })
-    .on('mouseleave', () => tooltip.style('opacity', 0))
-    .on('click', (_, d) => {
-      window.location.hash = `#/city/${d.row.id}/${d.column.id}`;
-    });
-
-  const axisGroup = svg.append('g').attr('transform', `translate(${margin.left}, ${margin.top - 10})`);
-
-  axisGroup
-    .selectAll('text.row')
-    .data(cities)
-    .enter()
-    .append('text')
-    .attr('class', 'row')
-    .attr('x', (_, i) => i * cellSize + cellSize / 2)
-    .attr('y', -14)
-    .attr('text-anchor', 'middle')
-    .attr('fill', '#e2e8f0')
-    .attr('font-size', '0.88rem')
-    .attr('font-weight', '600')
-    .style('letter-spacing', '0.04em')
-    .style('paint-order', 'stroke')
-    .style('stroke', 'rgba(15,23,42,0.75)')
-    .style('stroke-width', '4px')
-    .style('stroke-linejoin', 'round')
-    .text(city => city.name);
-
-  svg
-    .append('g')
-    .attr('transform', `translate(${margin.left - 10}, ${margin.top})`)
-    .selectAll('text.col')
-    .data(cities)
-    .enter()
-    .append('text')
-    .attr('class', 'col')
-    .attr('x', -10)
-    .attr('y', (_, i) => i * cellSize + cellSize / 2)
-    .attr('text-anchor', 'end')
-    .attr('alignment-baseline', 'middle')
-    .attr('fill', '#e2e8f0')
-    .attr('font-size', '0.88rem')
-    .attr('font-weight', '600')
-    .style('letter-spacing', '0.03em')
-    .style('paint-order', 'stroke')
-    .style('stroke', 'rgba(15,23,42,0.75)')
-    .style('stroke-width', '4px')
-    .style('stroke-linejoin', 'round')
-    .text(city => city.name);
-
-  state.rendered.heatmap = true;
-  console.info('[viz] renderHeatmap end');
-}
-
 function renderTopCitiesList() {
   if (!elements.home.topList) return;
   const topCities = getTopCities(12);
@@ -2607,7 +2534,22 @@ function renderDistinctiveCities(limit = 8) {
   const list = elements.home.distinctiveList;
   if (!panel || !list) return;
 
-  const entries = state.cityUniqueness.slice(0, limit);
+  const eligibleEntries = state.cityUniqueness.filter(entry => {
+    if (!entry) return false;
+    let streetTotal =
+      entry.streetCount ?? entry.totalStreetCount ?? entry.totalStreets ?? entry.cityStreetCount ?? null;
+    if (streetTotal === null || streetTotal === undefined) {
+      if (Array.isArray(entry.streets)) {
+        streetTotal = entry.streets.length;
+      } else if (typeof entry.streets === 'number') {
+        streetTotal = entry.streets;
+      }
+    }
+    const numericTotal = Number(streetTotal);
+    return Number.isFinite(numericTotal) && numericTotal > 30;
+  });
+
+  const entries = eligibleEntries.slice(0, limit);
   if (!entries.length) {
     panel.hidden = true;
     list.innerHTML = '';

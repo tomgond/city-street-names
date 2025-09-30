@@ -229,10 +229,6 @@ a:hover {
   box-shadow: 0 8px 18px rgba(203, 138, 79, 0.25);
 }
 
-.viz-canvas.heatmap {
-  min-height: 360px;
-}
-
 .viz-canvas.bars {
   min-height: 360px;
 }
