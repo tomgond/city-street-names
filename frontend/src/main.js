@@ -1051,75 +1051,112 @@ function prepareCityHonorGraph(raw) {
   finalNodes.push(...aggregatedNodes);
   finalLinks.push(...aggregatedLinks);
 
-  const adjacency = new Map();
-  finalNodes.forEach(node => {
-    const key = String(node.id);
-    if (!adjacency.has(key)) {
-      adjacency.set(key, new Set());
-    }
-  });
+  const focusNodeIds = new Set([...pathNodeIds, ...cycleNodeIds]);
+  let preparedNodes;
+  let preparedLinks;
 
-  finalLinks.forEach(link => {
-    const sourceId = String(link.source);
-    const targetId = String(link.target);
-    if (!adjacency.has(sourceId)) {
-      adjacency.set(sourceId, new Set());
-    }
-    if (!adjacency.has(targetId)) {
-      adjacency.set(targetId, new Set());
-    }
-    adjacency.get(sourceId).add(targetId);
-    adjacency.get(targetId).add(sourceId);
-  });
+  if (focusNodeIds.size) {
+    const allowedNodeIds = new Set(focusNodeIds);
 
-  const visited = new Set();
-  let largestComponent = new Set();
-
-  adjacency.forEach((_, nodeId) => {
-    if (visited.has(nodeId)) {
-      return;
-    }
-    const component = new Set();
-    const queue = [nodeId];
-    while (queue.length) {
-      const current = queue.shift();
-      if (!current || visited.has(current)) {
-        continue;
+    finalLinks.forEach(link => {
+      const sourceId = String(link.source);
+      const targetId = String(link.target);
+      if (focusNodeIds.has(sourceId) || focusNodeIds.has(targetId)) {
+        allowedNodeIds.add(sourceId);
+        allowedNodeIds.add(targetId);
       }
-      visited.add(current);
-      component.add(current);
-      const neighbors = adjacency.get(current);
-      if (!neighbors) {
-        continue;
+    });
+
+    finalNodes.forEach(node => {
+      if (!node || !node.aggregated) return;
+      const targetId = node.aggregateTarget ? String(node.aggregateTarget) : '';
+      if (targetId && allowedNodeIds.has(targetId)) {
+        allowedNodeIds.add(String(node.id));
       }
-      neighbors.forEach(neighborId => {
-        const neighborKey = String(neighborId);
-        if (!neighborKey || visited.has(neighborKey) || component.has(neighborKey)) {
-          return;
+    });
+
+    preparedNodes = finalNodes.filter(node => allowedNodeIds.has(String(node.id)));
+    const allowedIds = new Set(preparedNodes.map(node => String(node.id)));
+    preparedLinks = finalLinks.filter(link => {
+      const sourceId = String(link.source);
+      const targetId = String(link.target);
+      return allowedIds.has(sourceId) && allowedIds.has(targetId);
+    });
+    if (!preparedNodes.length) {
+      preparedNodes = finalNodes.slice();
+      preparedLinks = finalLinks.slice();
+    }
+  } else {
+    const adjacency = new Map();
+    finalNodes.forEach(node => {
+      const key = String(node.id);
+      if (!adjacency.has(key)) {
+        adjacency.set(key, new Set());
+      }
+    });
+
+    finalLinks.forEach(link => {
+      const sourceId = String(link.source);
+      const targetId = String(link.target);
+      if (!adjacency.has(sourceId)) {
+        adjacency.set(sourceId, new Set());
+      }
+      if (!adjacency.has(targetId)) {
+        adjacency.set(targetId, new Set());
+      }
+      adjacency.get(sourceId).add(targetId);
+      adjacency.get(targetId).add(sourceId);
+    });
+
+    const visited = new Set();
+    let largestComponent = new Set();
+
+    adjacency.forEach((_, nodeId) => {
+      if (visited.has(nodeId)) {
+        return;
+      }
+      const component = new Set();
+      const queue = [nodeId];
+      while (queue.length) {
+        const current = queue.shift();
+        if (!current || visited.has(current)) {
+          continue;
         }
-        queue.push(neighborKey);
-      });
-    }
-    if (component.size > largestComponent.size) {
-      largestComponent = component;
-    }
-  });
+        visited.add(current);
+        component.add(current);
+        const neighbors = adjacency.get(current);
+        if (!neighbors) {
+          continue;
+        }
+        neighbors.forEach(neighborId => {
+          const neighborKey = String(neighborId);
+          if (!neighborKey || visited.has(neighborKey) || component.has(neighborKey)) {
+            return;
+          }
+          queue.push(neighborKey);
+        });
+      }
+      if (component.size > largestComponent.size) {
+        largestComponent = component;
+      }
+    });
 
-  if (!largestComponent.size) {
-    largestComponent = new Set(finalNodes.map(node => String(node.id)));
+    if (!largestComponent.size) {
+      largestComponent = new Set(finalNodes.map(node => String(node.id)));
+    }
+
+    preparedNodes = finalNodes.filter(node => largestComponent.has(String(node.id)));
+    const componentNodeIds = new Set(preparedNodes.map(node => String(node.id)));
+    preparedLinks = finalLinks.filter(link => {
+      const sourceId = String(link.source);
+      const targetId = String(link.target);
+      return componentNodeIds.has(sourceId) && componentNodeIds.has(targetId);
+    });
   }
 
-  const componentNodes = finalNodes.filter(node => largestComponent.has(String(node.id)));
-  const componentNodeIds = new Set(componentNodes.map(node => String(node.id)));
-  const componentLinks = finalLinks.filter(link => {
-    const sourceId = String(link.source);
-    const targetId = String(link.target);
-    return componentNodeIds.has(sourceId) && componentNodeIds.has(targetId);
-  });
-
   const preparedGraph = {
-    nodes: componentNodes,
-    links: componentLinks,
+    nodes: preparedNodes,
+    links: preparedLinks,
     stats
   };
 
@@ -2185,6 +2222,11 @@ function renderCityChainSequence(container, entry, fallbackMessage) {
     const details = document.createElement('div');
     details.className = 'chain-step-details';
 
+    const relation = document.createElement('span');
+    relation.className = 'chain-step-relation';
+    relation.textContent = `in ${fromName}, there is a street named ${toName}.`;
+    details.appendChild(relation);
+
     const rawCount = Number(edge?.streetCount || 0);
     const streetCount = rawCount > 0
       ? rawCount
@@ -2217,7 +2259,9 @@ function renderCityChainSequence(container, entry, fallbackMessage) {
       const unique = Array.from(new Set(exampleNames)).slice(0, 4);
       const example = document.createElement('span');
       example.className = 'chain-step-examples';
-      example.textContent = `דוגמאות: ${unique.join(' · ')}`;
+      example.textContent = unique
+        .map(name => `in ${fromName}, there is a street named ${name}`)
+        .join(' · ');
       details.appendChild(example);
     }
 
@@ -2284,6 +2328,7 @@ function renderCityHonorGraph(force = false) {
   });
 
   const nodes = graphData.nodes.map(node => ({ ...node }));
+  const nodeLookup = new Map(nodes.map(node => [String(node.id), node]));
   const links = graphData.links.map(link => ({
     ...link,
     source: link.source,
@@ -2403,13 +2448,51 @@ function renderCityHonorGraph(force = false) {
     return `${d.name || d.id}\nמנציחה ${honorsOut} ערים (${streetOut} שמות רחובות)\nמונצחת ב-${honorsIn} ערים (${streetIn} שמות)`;
   });
 
+  const resolveNode = nodeRef => {
+    if (nodeRef && typeof nodeRef === 'object') {
+      return nodeRef;
+    }
+    return nodeLookup.get(String(nodeRef)) || null;
+  };
+
+  const computeLinkEndpoints = link => {
+    const sourceNode = resolveNode(link.source);
+    const targetNode = resolveNode(link.target);
+    if (!sourceNode || !targetNode) {
+      return {
+        x1: sourceNode?.x ?? 0,
+        y1: sourceNode?.y ?? 0,
+        x2: targetNode?.x ?? 0,
+        y2: targetNode?.y ?? 0
+      };
+    }
+
+    const dx = targetNode.x - sourceNode.x;
+    const dy = targetNode.y - sourceNode.y;
+    const distance = Math.hypot(dx, dy) || 1;
+    const sourceRadius = getHonorNodeRadius(sourceNode) + 2;
+    const targetRadius = getHonorNodeRadius(targetNode) + 6;
+    const startRatio = sourceRadius / distance;
+    const endRatio = targetRadius / distance;
+
+    return {
+      x1: sourceNode.x + dx * startRatio,
+      y1: sourceNode.y + dy * startRatio,
+      x2: targetNode.x - dx * endRatio,
+      y2: targetNode.y - dy * endRatio
+    };
+  };
+
   const updatePositions = () => {
     nodes.forEach(node => clampNodeToBounds(node, width, height, 40));
-    linkSelection
-      .attr('x1', d => d.source.x)
-      .attr('y1', d => d.source.y)
-      .attr('x2', d => d.target.x)
-      .attr('y2', d => d.target.y);
+    linkSelection.each(function(d) {
+      const { x1, y1, x2, y2 } = computeLinkEndpoints(d);
+      d3.select(this)
+        .attr('x1', x1)
+        .attr('y1', y1)
+        .attr('x2', x2)
+        .attr('y2', y2);
+    });
     nodeSelection.attr('transform', d => `translate(${d.x}, ${d.y})`);
   };
 
@@ -2513,8 +2596,10 @@ function renderTopCitiesList() {
   elements.home.topList.innerHTML = topCities
     .map(city => `
       <li>
-        <strong>${city.name}</strong>
-        <span class="count">${city.streetCount.toLocaleString()} רחובות</span>
+        <a href="#/city/${city.id}" class="top-city-link">
+          <strong>${city.name}</strong>
+          <span class="count">${city.streetCount.toLocaleString()} רחובות</span>
+        </a>
       </li>
     `)
     .join('');
@@ -2566,14 +2651,16 @@ function renderDistinctiveCities(limit = 8) {
       const rank = entry.rank ?? 0;
       return `
         <li>
-          <div class="row-main">
-            <span class="rank">#${rank}</span>
-            <strong>${entry.name}</strong>
-          </div>
-          <div class="row-sub">
-            <span>${uniqueCount.toLocaleString()} רחובות ייחודיים (${share})</span>
-            <span>ממוצע נדירות: ${mean.toFixed(3)}, חציון: ${median.toFixed(3)}</span>
-          </div>
+          <a href="#/city/${entry.id}" class="top-city-link distinctive">
+            <div class="row-main">
+              <span class="rank">#${rank}</span>
+              <strong>${entry.name}</strong>
+            </div>
+            <div class="row-sub">
+              <span>${uniqueCount.toLocaleString()} רחובות ייחודיים (${share})</span>
+              <span>ממוצע נדירות: ${mean.toFixed(3)}, חציון: ${median.toFixed(3)}</span>
+            </div>
+          </a>
         </li>
       `;
     })
@@ -2702,7 +2789,7 @@ function renderCity(primaryId, secondaryId = '') {
   `;
 
   renderCityChart(city, similarity);
-  const selectedPartnerId = secondaryId || (similarity[0]?.city ?? '');
+  const selectedPartnerId = secondaryId || '';
   renderCitySimilarButtons(primaryId, similarity, selectedPartnerId);
   if (selectedPartnerId) {
     setCityInputValue(elements.city.secondarySelect, elements.city.secondarySuggestions, selectedPartnerId);
@@ -2838,7 +2925,6 @@ function setActiveSimilarCity(partnerId) {
 
   if (!normalized) {
     buttons.forEach(button => button.classList.remove('active'));
-    buttons[0].classList.add('active');
     return;
   }
 
@@ -2982,13 +3068,64 @@ function renderOverlap(primaryId, secondaryId) {
   const container = elements.city.overlap;
   if (!container) return;
   container.innerHTML = '';
-  if (!secondaryId) {
-    container.innerHTML = '<p>בחרו עיר נוספת כדי להציג את רשימת החפיפה המלאה.</p>';
+
+  const primary = state.cityMap.get(primaryId);
+  if (!primary) {
+    container.innerHTML = '<p>לא ניתן לטעון את הנתונים עבור העיר שנבחרה.</p>';
     return;
   }
-  const primary = state.cityMap.get(primaryId);
+
+  if (!secondaryId) {
+    const streets = Array.isArray(primary.streets) ? primary.streets : [];
+    if (!streets.length) {
+      container.innerHTML = '<p>לא נמצאו רחובות להצגה עבור העיר שנבחרה.</p>';
+      return;
+    }
+
+    const sorted = streets
+      .map(street => {
+        const rarityValue =
+          typeof street?.rarityWeight === 'number' && Number.isFinite(street.rarityWeight)
+            ? street.rarityWeight
+            : Number(state.rarityWeights?.[street.key]) || 0;
+        return {
+          ...street,
+          rarity: rarityValue
+        };
+      })
+      .sort((a, b) => {
+        const rarityDiff = (b.rarity || 0) - (a.rarity || 0);
+        if (Math.abs(rarityDiff) > 1e-9) return rarityDiff;
+        const aLabel = a.display || a.normDisplay || a.name || a.key || '';
+        const bLabel = b.display || b.normDisplay || b.name || b.key || '';
+        return aLabel.localeCompare(bLabel);
+      });
+
+    const note = document.createElement('p');
+    note.className = 'overlap-note';
+    note.textContent = `כל הרחובות בעיר ${primary.name}`;
+    container.appendChild(note);
+
+    const list = document.createElement('ul');
+    sorted.forEach(street => {
+      const li = document.createElement('li');
+      const displayName = street.display || street.normDisplay || street.name || street.key;
+      li.innerHTML = `
+        <span>${displayName}</span>
+        <div class="overlap-actions">
+          <small>משקל נדירות: ${street.rarity.toFixed(3)}</small>
+          <button type="button">לפרטי רחוב</button>
+        </div>
+      `;
+      li.querySelector('button').addEventListener('click', () => navigateToStreet(street.key));
+      list.appendChild(li);
+    });
+    container.appendChild(list);
+    return;
+  }
+
   const secondary = state.cityMap.get(secondaryId);
-  if (!primary || !secondary) {
+  if (!secondary) {
     container.innerHTML = '<p>לא ניתן לטעון את הנתונים עבור אחת הערים.</p>';
     return;
   }
