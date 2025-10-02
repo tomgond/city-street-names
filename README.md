@@ -69,7 +69,7 @@ python3 -m pip install networkx
 
   * Show display name + variants.
   * List all cities with this street.
-  * Optional map view (Leaflet, using `city_coords.json`).
+* Optional map view (Leaflet, when coordinate data is available).
 * **Search**:
 
   * Fuse.js fuzzy search (Hebrew).

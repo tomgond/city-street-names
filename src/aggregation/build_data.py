@@ -113,7 +113,16 @@ class StreetProcessingPipeline:
 
         for norm_key, cities in self.street_to_cities.items():
             df = len(cities)
+            if df <= 0:
+                continue
             self.rarity_weights[norm_key] = 1.0 / math.log(1 + df)
+
+        if self.rarity_weights:
+            max_weight = max(self.rarity_weights.values())
+            if max_weight > 0:
+                scale = 100.0 / max_weight
+                for norm_key, weight in list(self.rarity_weights.items()):
+                    self.rarity_weights[norm_key] = weight * scale
 
         compute_time = time.time() - start_time
         logger.info("Computed rarity weights in %.2fs", compute_time)
