@@ -1737,8 +1737,9 @@ function renderNetworkGraph(target, options = {}) {
   }
 
   const rect = container.getBoundingClientRect();
-  const width = Math.max(rect.width || container.clientWidth || 600, 320);
-  const resolvedHeight = forcedHeight ?? Math.max(rect.height || container.clientHeight || 0, 420);
+  const width = Math.max(rect.width || container.clientWidth || container.offsetWidth || 600, 320);
+  const resolvedHeight =
+    forcedHeight ?? Math.max(rect.height || container.clientHeight || container.offsetHeight || 0, 420);
   const margin = 48;
 
   const communityKeyFor = node =>
@@ -1781,8 +1782,8 @@ function renderNetworkGraph(target, options = {}) {
     .select(container)
     .append('svg')
     .attr('viewBox', `0 0 ${width} ${resolvedHeight}`)
-    .attr('width', width)
-    .attr('height', resolvedHeight)
+    .attr('width', '100%')
+    .attr('height', '100%')
     .attr('preserveAspectRatio', 'xMidYMid meet')
     .classed('network-graph', true);
 
@@ -2063,8 +2064,8 @@ function renderNetworkPreview(force = false) {
   if (!container) return;
   if (!force && state.rendered.networkPreview) return;
   renderNetworkGraph(container, {
-    limit: 50,
-    maxLinks: 900,
+    limit: 60,
+    maxLinks: 1080,
     cacheKey: 'preview',
     layout: state.graphSettings.layout,
     metric: state.graphSettings.metric,
@@ -2185,6 +2186,15 @@ function renderCityChainSequence(container, entry, fallbackMessage) {
 
   const fragment = document.createDocumentFragment();
 
+  const createSpan = (text, className) => {
+    const span = document.createElement('span');
+    if (className) {
+      span.className = className;
+    }
+    span.textContent = text;
+    return span;
+  };
+
   edges.forEach((edge, index) => {
     const fromIndex = Math.min(index, cityIds.length - 1);
     const toIndex = index + 1 < cityIds.length ? index + 1 : (isCycle ? (index + 1) % cityIds.length : index + 1);
@@ -2224,7 +2234,13 @@ function renderCityChainSequence(container, entry, fallbackMessage) {
 
     const relation = document.createElement('span');
     relation.className = 'chain-step-relation';
-    relation.textContent = `in ${fromName}, there is a street named ${toName}.`;
+    relation.append(
+      createSpan('בעיר', 'chain-relation-label'),
+      createSpan(fromName, 'chain-relation-city from'),
+      createSpan('יש רחוב בשם', 'chain-relation-label'),
+      createSpan('→', 'chain-relation-arrow'),
+      createSpan(toName, 'chain-relation-city to')
+    );
     details.appendChild(relation);
 
     const rawCount = Number(edge?.streetCount || 0);
@@ -2235,11 +2251,12 @@ function renderCityChainSequence(container, entry, fallbackMessage) {
         : Array.isArray(edge?.streets)
           ? edge.streets.length
           : 1;
-    const countLabel = streetCount === 1 ? 'רחוב אחד' : `${streetCount} רחובות`;
-    const countBadge = document.createElement('span');
-    countBadge.className = 'chain-step-count';
-    countBadge.textContent = countLabel;
-    details.appendChild(countBadge);
+    if (streetCount > 1) {
+      const countBadge = document.createElement('span');
+      countBadge.className = 'chain-step-count';
+      countBadge.textContent = `${streetCount} רחובות`;
+      details.appendChild(countBadge);
+    }
 
     const exampleNames = [];
     if (Array.isArray(edge?.streetNames)) {
@@ -2259,9 +2276,21 @@ function renderCityChainSequence(container, entry, fallbackMessage) {
       const unique = Array.from(new Set(exampleNames)).slice(0, 4);
       const example = document.createElement('span');
       example.className = 'chain-step-examples';
-      example.textContent = unique
-        .map(name => `in ${fromName}, there is a street named ${name}`)
-        .join(' · ');
+      unique.forEach((name, index) => {
+        if (index > 0) {
+          example.appendChild(createSpan('·', 'chain-example-separator'));
+        }
+        const entry = document.createElement('span');
+        entry.className = 'chain-example-entry';
+        entry.append(
+          createSpan('בעיר', 'chain-relation-label'),
+          createSpan(fromName, 'chain-relation-city from'),
+          createSpan('יש רחוב בשם', 'chain-relation-label'),
+          createSpan('→', 'chain-relation-arrow'),
+          createSpan(name, 'chain-example-name')
+        );
+        example.appendChild(entry);
+      });
       details.appendChild(example);
     }
 
@@ -2853,18 +2882,26 @@ function renderCityChart(city, similarity) {
       window.location.hash = `#/city/${city.id}/${d.city}`;
     });
 
-  svg
+  const yAxis = svg
     .append('g')
     .attr('transform', `translate(${margin.left}, 0)`)
     .call(
       d3
         .axisLeft(y)
         .tickFormat(id => state.cityMap.get(id)?.name || id)
-    )
-    .selectAll('text')
-    .style('fill', '#e2e8f0');
+        .tickSize(0)
+        .tickPadding(12)
+    );
 
-  svg
+  yAxis.selectAll('text')
+    .style('fill', 'var(--text)')
+    .style('font-weight', '600')
+    .attr('text-anchor', 'end')
+    .attr('dx', '-0.35rem');
+
+  yAxis.select('.domain').remove();
+
+  const xAxis = svg
     .append('g')
     .attr('transform', `translate(0, ${height - margin.bottom})`)
     .call(
@@ -2872,9 +2909,11 @@ function renderCityChart(city, similarity) {
         .axisBottom(x)
         .ticks(5)
         .tickFormat(value => value.toFixed(2))
-    )
-    .selectAll('text')
-    .style('fill', '#e2e8f0');
+        .tickSize(0)
+    );
+
+  xAxis.selectAll('text').style('fill', 'var(--text)');
+  xAxis.select('.domain').remove();
 }
 
 function renderCitySimilarButtons(primaryId, similarity, activeCityId = '') {
