@@ -986,11 +986,36 @@ button:disabled {
 }
 
 .chain-step-relation {
+  display: inline-flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.25rem;
   background: rgba(254, 244, 229, 0.8);
   border-radius: 999px;
   padding: 0.25rem 0.7rem;
   font-weight: 600;
   color: rgba(135, 104, 73, 0.9);
+}
+
+.chain-relation-label {
+  color: rgba(135, 104, 73, 0.8);
+}
+
+.chain-relation-city {
+  font-weight: 700;
+}
+
+.chain-relation-city.from {
+  color: var(--text);
+}
+
+.chain-relation-city.to {
+  color: rgba(214, 141, 59, 0.95);
+}
+
+.chain-relation-arrow {
+  color: var(--accent-strong);
+  font-weight: 700;
 }
 
 .chain-step-count {
@@ -1002,12 +1027,32 @@ button:disabled {
 }
 
 .chain-step-examples {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.35rem 0.55rem;
   background: rgba(254, 244, 229, 0.9);
   border-radius: 999px;
   padding: 0.25rem 0.7rem;
   color: rgba(135, 104, 73, 0.85);
   white-space: normal;
   line-height: 1.35;
+}
+
+.chain-example-entry {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+}
+
+.chain-example-name {
+  font-weight: 700;
+  color: rgba(214, 141, 59, 0.95);
+}
+
+.chain-example-separator {
+  color: rgba(135, 104, 73, 0.6);
+  margin: 0 0.2rem;
 }
 
 #city-chain-graph svg {
