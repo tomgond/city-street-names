@@ -286,17 +286,10 @@ if __name__ == "__main__":
     default_input = "street_names.csv"
     default_output = "data/raw/norm.csv"
 
-    if len(sys.argv) < 2:
-        # Test with examples
-        test_examples()
-        sys.exit(0)
-    elif sys.argv[1] == "test":
-        test_examples()
-        sys.exit(0)
-    else:
-        inp = sys.argv[1] if len(sys.argv) > 1 else default_input
-        outp = sys.argv[2] if len(sys.argv) > 2 else default_output
-        print(f"Using input: {inp}, output: {outp}")
+
+    inp = sys.argv[1] if len(sys.argv) > 1 else default_input
+    outp = sys.argv[2] if len(sys.argv) > 2 else default_output
+    print(f"Using input: {inp}, output: {outp}")
 
     # Check if input file exists
     try:
