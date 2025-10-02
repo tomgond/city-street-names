@@ -55,9 +55,21 @@ def _strip_nikud(s):
 # collapse whitespace
 WS_RE = re.compile(r"\s+")
 
+# streets that should be removed entirely – e.g., "רח 2004"
+RACHOV_NUMERIC_RE = re.compile(r"^רח\s*\d+$")
+
 
 def _ws_collapse(s):
     return WS_RE.sub(" ", s).strip()
+
+
+def _is_numeric_rachov(raw_name: str) -> bool:
+    if not raw_name:
+        return False
+    normalized = unicodedata.normalize("NFKC", raw_name.strip())
+    normalized = _strip_controls(_strip_nikud(normalized))
+    normalized = _ws_collapse(normalized)
+    return bool(RACHOV_NUMERIC_RE.match(normalized))
 
 
 def strip_type_prefix(s):
@@ -151,15 +163,16 @@ def normalize_csv_file(csv_path):
     anchor_set = set()
     for row in rows_data:
         street_name = row["street_name"]
-        if street_name:
-            n = normalize_name(street_name, drop_he=False)
-            anchor_set.add(n['key'])
-            # Also add dropped version if applicable
-            tokens = street_name.split()
-            if tokens and tokens[0].startswith("ה") and len(tokens[0]) > 1:
-                dropped_s = drop_def_he(street_name)
-                dropped_normed = normalize_name(dropped_s, drop_he=False)
-                anchor_set.add(dropped_normed['key'])
+        if not street_name or _is_numeric_rachov(street_name):
+            continue
+        n = normalize_name(street_name, drop_he=False)
+        anchor_set.add(n['key'])
+        # Also add dropped version if applicable
+        tokens = street_name.split()
+        if tokens and tokens[0].startswith("ה") and len(tokens[0]) > 1:
+            dropped_s = drop_def_he(street_name)
+            dropped_normed = normalize_name(dropped_s, drop_he=False)
+            anchor_set.add(dropped_normed['key'])
 
     # Second pass: process each row with conditional drop of he
     normalized_rows = []
@@ -168,6 +181,9 @@ def normalize_csv_file(csv_path):
         city_name = row["city_name"]
         street_code = row["street_code"]
         street_name = row["street_name"]
+
+        if _is_numeric_rachov(street_name):
+            continue
 
         normed = normalize_name(street_name, drop_he=False)
 
@@ -215,15 +231,16 @@ def normalize_csv_file_from_rows(rows_data):
     anchor_set = set()
     for row in rows_data:
         street_name = row["street_name"]
-        if street_name:
-            n = normalize_name(street_name, drop_he=False)
-            anchor_set.add(n['key'])
-            # Also add dropped version if applicable
-            tokens = street_name.split()
-            if tokens and tokens[0].startswith("ה") and len(tokens[0]) > 1:
-                dropped_s = drop_def_he(street_name)
-                dropped_normed = normalize_name(dropped_s, drop_he=False)
-                anchor_set.add(dropped_normed['key'])
+        if not street_name or _is_numeric_rachov(street_name):
+            continue
+        n = normalize_name(street_name, drop_he=False)
+        anchor_set.add(n['key'])
+        # Also add dropped version if applicable
+        tokens = street_name.split()
+        if tokens and tokens[0].startswith("ה") and len(tokens[0]) > 1:
+            dropped_s = drop_def_he(street_name)
+            dropped_normed = normalize_name(dropped_s, drop_he=False)
+            anchor_set.add(dropped_normed['key'])
 
     # Second pass: process each row with conditional drop of he
     normalized_rows = []
@@ -232,6 +249,9 @@ def normalize_csv_file_from_rows(rows_data):
         city_name = row["city_name"]
         street_code = row["street_code"]
         street_name = row["street_name"]
+
+        if _is_numeric_rachov(street_name):
+            continue
 
         normed = normalize_name(street_name, drop_he=False)
 
@@ -264,7 +284,7 @@ if __name__ == "__main__":
 
     # Default input and output files
     default_input = "street_names.csv"
-    default_output = "norm.csv"
+    default_output = "data/raw/norm.csv"
 
     if len(sys.argv) < 2:
         # Test with examples
@@ -290,7 +310,9 @@ if __name__ == "__main__":
         print(f"{r['street_name']}  -->  {r['norm_display']}  | key={r['norm_key']}")
 
     # Write normalized data to output CSV
-    with open(outp, "w", newline="", encoding="utf-8") as f:
+    out_path = Path(outp)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    with out_path.open("w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=[
             "city_code", "city_name", "street_code", "street_name", "norm_display", "norm_key"
         ])
