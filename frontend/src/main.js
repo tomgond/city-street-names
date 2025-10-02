@@ -796,19 +796,19 @@ async function loadData() {
     renderStreetDirectory();
 
     try {
-      console.info('[data] attempting to fetch city_coords.json');
+      console.info('[data] checking for optional city coordinate data');
       const coordsResponse = await fetch(`${base}/city_coords.json`, { cache: 'no-store' });
       if (coordsResponse.ok) {
         const coords = await coordsResponse.json();
         state.cityCoords = new Map(Object.entries(coords || {}));
         console.info('[data] city coordinates loaded', { cities: state.cityCoords.size });
       } else if (coordsResponse.status !== 404) {
-        console.warn('[data] city_coords.json request returned', coordsResponse.status, coordsResponse.statusText);
+        console.warn('[data] city coordinate request returned', coordsResponse.status, coordsResponse.statusText);
       } else {
-        console.info('[data] city_coords.json not found (map layer disabled)');
+        console.info('[data] city coordinate data not available (map layer disabled)');
       }
     } catch (coordsError) {
-      console.warn('[data] city_coords.json fetch error', coordsError);
+      console.warn('[data] city coordinate fetch error', coordsError);
     }
 
     resetCityInputs();
@@ -2220,7 +2220,7 @@ function renderCityChainSequence(container, entry, fallbackMessage) {
 
     const arrow = document.createElement('span');
     arrow.className = 'chain-step-arrow';
-    arrow.textContent = '⇢';
+    arrow.textContent = '⇠';
 
     const toLabel = document.createElement('span');
     toLabel.className = 'chain-step-city to';
@@ -2238,7 +2238,7 @@ function renderCityChainSequence(container, entry, fallbackMessage) {
       createSpan('בעיר', 'chain-relation-label'),
       createSpan(fromName, 'chain-relation-city from'),
       createSpan('יש רחוב בשם', 'chain-relation-label'),
-      createSpan('→', 'chain-relation-arrow'),
+      createSpan('←', 'chain-relation-arrow'),
       createSpan(toName, 'chain-relation-city to')
     );
     details.appendChild(relation);
@@ -2276,19 +2276,14 @@ function renderCityChainSequence(container, entry, fallbackMessage) {
       const unique = Array.from(new Set(exampleNames)).slice(0, 4);
       const example = document.createElement('span');
       example.className = 'chain-step-examples';
+      example.appendChild(createSpan('דוגמאות לרחובות: ', 'chain-examples-label'));
       unique.forEach((name, index) => {
         if (index > 0) {
           example.appendChild(createSpan('·', 'chain-example-separator'));
         }
         const entry = document.createElement('span');
         entry.className = 'chain-example-entry';
-        entry.append(
-          createSpan('בעיר', 'chain-relation-label'),
-          createSpan(fromName, 'chain-relation-city from'),
-          createSpan('יש רחוב בשם', 'chain-relation-label'),
-          createSpan('→', 'chain-relation-arrow'),
-          createSpan(name, 'chain-example-name')
-        );
+        entry.append(createSpan(name, 'chain-example-name'));
         example.appendChild(entry);
       });
       details.appendChild(example);
@@ -2643,6 +2638,14 @@ function formatPercentage(value, digits = 1) {
   return `${percentage.toFixed(safeDigits)}%`;
 }
 
+function formatRarityWeight(value, digits = 1) {
+  if (typeof value !== 'number' || Number.isNaN(value)) {
+    return '0%';
+  }
+  const safeDigits = Math.max(0, Math.min(2, digits));
+  return `${value.toFixed(safeDigits)}%`;
+}
+
 function renderDistinctiveCities(limit = 8) {
   const panel = elements.home.distinctivePanel;
   const list = elements.home.distinctiveList;
@@ -2687,7 +2690,7 @@ function renderDistinctiveCities(limit = 8) {
             </div>
             <div class="row-sub">
               <span>${uniqueCount.toLocaleString()} רחובות ייחודיים (${share})</span>
-              <span>ממוצע נדירות: ${mean.toFixed(3)}, חציון: ${median.toFixed(3)}</span>
+              <span>ממוצע נדירות: ${formatRarityWeight(mean, 1)}, חציון: ${formatRarityWeight(median, 1)}</span>
             </div>
           </a>
         </li>
@@ -2776,7 +2779,7 @@ function renderCity(primaryId, secondaryId = '') {
               street => `
                 <li>
                   <span class="unique-street-name">${street.display}</span>
-                  <span class="unique-street-rarity">משקל נדירות: ${street.rarity.toFixed(3)}</span>
+                  <span class="unique-street-rarity">משקל נדירות: ${formatRarityWeight(street.rarity, 1)}</span>
                 </li>
               `
             )
@@ -2807,7 +2810,7 @@ function renderCity(primaryId, secondaryId = '') {
       </div>
       <div>
         <div>מדד נדירות (ממוצע/חציון):</div>
-        <strong>${meanRarity.toFixed(3)} / ${medianRarity.toFixed(3)}</strong>
+        <strong>${formatRarityWeight(meanRarity, 1)} / ${formatRarityWeight(medianRarity, 1)}</strong>
       </div>
       <div>
         <div>דירוג ייחודיות ארצי:</div>
@@ -3087,7 +3090,7 @@ function renderSharedStreets(primaryId, partnerId) {
       street.key;
     const rarityValue = Number(street.rarity_weight);
     const rarity = Number.isFinite(rarityValue) ? rarityValue : 0;
-    const rarityText = rarity.toFixed(2);
+    const rarityText = formatRarityWeight(rarity, 1);
     const li = document.createElement('li');
     const template = [
       '<span>' + displayName + '</span>',
@@ -3152,7 +3155,7 @@ function renderOverlap(primaryId, secondaryId) {
       li.innerHTML = `
         <span>${displayName}</span>
         <div class="overlap-actions">
-          <small>משקל נדירות: ${street.rarity.toFixed(3)}</small>
+          <small>משקל נדירות: ${formatRarityWeight(street.rarity, 1)}</small>
           <button type="button">לפרטי רחוב</button>
         </div>
       `;
@@ -3190,7 +3193,7 @@ function renderOverlap(primaryId, secondaryId) {
     li.innerHTML = `
       <span>${street.display}</span>
       <div class="overlap-actions">
-        <small>משקל נדירות: ${street.rarity.toFixed(3)}</small>
+        <small>משקל נדירות: ${formatRarityWeight(street.rarity, 1)}</small>
         <button type="button">לפרטי רחוב</button>
       </div>
     `;
@@ -3786,7 +3789,7 @@ function renderStreetDetails(streetKey, updateHash = true) {
       </div>
       <div>
         <div>משקל נדירות:</div>
-        <strong>${(entry.rarityWeight || 0).toFixed(3)}</strong>
+        <strong>${formatRarityWeight(Number(entry.rarityWeight || 0), 1)}</strong>
       </div>
       <div>
         <div>מפתח רחוב:</div>
@@ -3836,7 +3839,7 @@ function renderStreetMap(entry) {
   if (!state.cityCoords) {
     if (placeholder) {
       const fallback = document.createElement('p');
-      fallback.textContent = 'למפה דרוש הקובץ city_coords.json (אופציונלי).';
+      fallback.textContent = 'נתוני מיקום לערים אינם זמינים, ולכן שכבת המפה מושבתת.';
       fallback.style.marginTop = '1rem';
       placeholder.replaceWith(fallback);
     }
