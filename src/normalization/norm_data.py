@@ -14,7 +14,7 @@ from typing import Dict, Iterable, List
 # ---- Configurable knobs ----
 TYPE_PREFIXES = {
     "רחוב", "רח", "רח'", "שדרות", "שד", "שד'", "דרך", "כביש",
-    "שביל", "סמטה", "מבוי", "כיכר", "מעלה", "ככר", "מחלף", "מבוא",
+    "שביל", "נתיב", "סמטה", "מבוי", "כיכר", "מעלה", "ככר", "מחלף", "מבוא",
     "שכ", "סמ", "נחל"
 }
 
@@ -58,6 +58,9 @@ WS_RE = re.compile(r"\s+")
 # streets that should be removed entirely – e.g., "רח 2004"
 RACHOV_NUMERIC_RE = re.compile(r"^רח\s*\d+$")
 
+# trailing alley identifiers like "סמ3"
+ALLEY_SUFFIX_RE = re.compile(r"^סמ\d+$")
+
 
 def _ws_collapse(s):
     return WS_RE.sub(" ", s).strip()
@@ -76,6 +79,13 @@ def strip_type_prefix(s):
     tokens = s.split()
     while tokens and tokens[0] in TYPE_PREFIXES:
         tokens = tokens[1:]
+    return " ".join(tokens)
+
+
+def strip_trailing_alley_suffix(s: str) -> str:
+    tokens = s.split()
+    while tokens and ALLEY_SUFFIX_RE.match(tokens[-1]):
+        tokens.pop()
     return " ".join(tokens)
 
 
@@ -108,12 +118,14 @@ def normalize_name(raw, drop_he=False):
     s = _ws_collapse(s)
     # 7) strip leading type prefixes
     s = strip_type_prefix(s)
-    # 8) optionally drop leading ה (definite article)
+    # 8) drop trailing alley suffixes (e.g., סמ3)
+    s = strip_trailing_alley_suffix(s)
+    # 9) optionally drop leading ה (definite article)
     if drop_he:
         s = drop_def_he(s)
-    # 9) collapse again (in case)
+    # 10) collapse again (in case)
     s = _ws_collapse(s)
-    # 10) build a join-friendly key (no spaces)
+    # 11) build a join-friendly key (no spaces)
     key = s.replace(" ", "")
     return {"display": s, "key": key}
 
@@ -217,6 +229,8 @@ def test_examples():
         {"city_code": "1", "city_name": "Test City", "street_code": "1", "street_name": "שיטה"},
         {"city_code": "1", "city_name": "Test City", "street_code": "2", "street_name": "השיטה"},
         {"city_code": "1", "city_name": "Test City", "street_code": "3", "street_name": "שביל השיטה"},
+        {"city_code": "1", "city_name": "Test City", "street_code": "4", "street_name": "נתיב הנרקיס"},
+        {"city_code": "1", "city_name": "Test City", "street_code": "5", "street_name": "בטן אל-הווא סמ3"},
     ]
     print("Testing normalization with examples:")
     normalized = normalize_csv_file_from_rows(test_rows)
