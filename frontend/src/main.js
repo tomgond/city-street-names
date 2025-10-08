@@ -2351,15 +2351,56 @@ function renderCityHonorGraph(force = false) {
       .attr('fill', config.color);
   });
 
-  const nodes = graphData.nodes.map(node => ({ ...node }));
-  const nodeLookup = new Map(nodes.map(node => [String(node.id), node]));
-  const links = graphData.links.map(link => ({
+  let nodes = graphData.nodes.map(node => ({ ...node }));
+  let links = graphData.links.map(link => ({
     ...link,
     source: link.source,
     target: link.target,
     _source: link.source,
     _target: link.target
   }));
+
+  const degreeById = new Map();
+  links.forEach(link => {
+    const sourceId = String(link.source);
+    const targetId = String(link.target);
+    degreeById.set(sourceId, (degreeById.get(sourceId) || 0) + 1);
+    degreeById.set(targetId, (degreeById.get(targetId) || 0) + 1);
+  });
+
+  const keptNodeIds = new Set();
+  nodes.forEach(node => {
+    const id = String(node.id);
+    if ((degreeById.get(id) || 0) > 1) {
+      keptNodeIds.add(id);
+    }
+  });
+
+  nodes = nodes.filter(node => keptNodeIds.has(String(node.id)));
+  links = links.filter(link => {
+    const sourceId = String(link.source);
+    const targetId = String(link.target);
+    return keptNodeIds.has(sourceId) && keptNodeIds.has(targetId);
+  });
+
+  const removedNodes = graphData.nodes.length - nodes.length;
+  const removedLinks = graphData.links.length - links.length;
+
+  if (removedNodes > 0 || removedLinks > 0) {
+    console.info('[viz] city honor graph pruning', {
+      originalNodes: graphData.nodes.length,
+      originalLinks: graphData.links.length,
+      removedNodes,
+      removedLinks
+    });
+  }
+
+  if (!nodes.length || !links.length) {
+    container.innerHTML = '<p class="empty-state">לאחר סינון ערים עם חיבור בודד לא נותרו קשרים להצגה.</p>';
+    return;
+  }
+
+  const nodeLookup = new Map(nodes.map(node => [String(node.id), node]));
 
   const pathEdgeKeys = state.cityHonors.pathEdgeKeys || new Set();
   const cycleEdgeKeys = state.cityHonors.cycleEdgeKeys || new Set();
