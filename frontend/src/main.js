@@ -2220,7 +2220,7 @@ function renderCityChainSequence(container, entry, fallbackMessage) {
 
     const arrow = document.createElement('span');
     arrow.className = 'chain-step-arrow';
-    arrow.textContent = '⇠';
+    arrow.textContent = '⇢';
 
     const toLabel = document.createElement('span');
     toLabel.className = 'chain-step-city to';
@@ -2238,7 +2238,7 @@ function renderCityChainSequence(container, entry, fallbackMessage) {
       createSpan('בעיר', 'chain-relation-label'),
       createSpan(fromName, 'chain-relation-city from'),
       createSpan('יש רחוב בשם', 'chain-relation-label'),
-      createSpan('←', 'chain-relation-arrow'),
+      createSpan('->', 'chain-relation-arrow'),
       createSpan(toName, 'chain-relation-city to')
     );
     details.appendChild(relation);
@@ -2272,12 +2272,11 @@ function renderCityChainSequence(container, entry, fallbackMessage) {
       });
     }
 
-    if (exampleNames.length) {
-      const unique = Array.from(new Set(exampleNames)).slice(0, 4);
+    const uniqueExamples = Array.from(new Set(exampleNames)).slice(0, 4);
+    if (uniqueExamples.length) {
       const example = document.createElement('span');
       example.className = 'chain-step-examples';
-      example.appendChild(createSpan('דוגמאות לרחובות: ', 'chain-examples-label'));
-      unique.forEach((name, index) => {
+      uniqueExamples.forEach((name, index) => {
         if (index > 0) {
           example.appendChild(createSpan('·', 'chain-example-separator'));
         }
