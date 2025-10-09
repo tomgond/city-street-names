@@ -57,9 +57,10 @@ def find_potential_prefixes(csv_path, min_length=2, max_count=20):
                     first_token = tokens[0].strip()
                     # Exclude if too short, or already in TYPE_PREFIXES, not alphabet, or too long (likely proper nouns)
                     if (len(first_token) >= min_length and
-                        len(first_token) <= 6 and  # Max length for type prefixes
+                        # Max length for type prefixes
+                        len(first_token) <= 6 and
                         first_token not in TYPE_PREFIXES and
-                        first_token.isalnum()):  # Check for alphanumeric
+                            first_token.isalnum()):  # Check for alphanumeric
                         prefix_counter[first_token] += 1
 
     except IOError:
