@@ -271,7 +271,7 @@ a:hover {
   box-shadow: 0 12px 24px rgba(210, 168, 128, 0.18);
 }
 
-.top-cities-list li > a.top-city-link {
+.top-cities-list li>a.top-city-link {
   display: flex;
   flex-direction: column;
   gap: 0.3rem;
@@ -281,13 +281,13 @@ a:hover {
   border-radius: inherit;
 }
 
-.top-cities-list li > a.top-city-link:hover,
-.top-cities-list li > a.top-city-link:focus {
+.top-cities-list li>a.top-city-link:hover,
+.top-cities-list li>a.top-city-link:focus {
   color: inherit;
   text-decoration: none;
 }
 
-.top-cities-list li > a.top-city-link:focus-visible {
+.top-cities-list li>a.top-city-link:focus-visible {
   outline: 2px solid rgba(240, 175, 109, 0.7);
   outline-offset: 4px;
 }
@@ -707,6 +707,10 @@ button:disabled {
 
 .network-graph .graph-label {
   transition: opacity 0.2s ease;
+  paint-order: stroke fill;
+  stroke: rgba(255, 255, 255, 0.92);
+  stroke-width: 3px;
+  stroke-linejoin: round;
 }
 
 .network-graph .graph-label.is-dimmed {
@@ -1024,35 +1028,6 @@ button:disabled {
   padding: 0.25rem 0.7rem;
   font-weight: 600;
   color: var(--accent-strong);
-}
-
-.chain-step-examples {
-  display: inline-flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 0.35rem 0.55rem;
-  background: rgba(254, 244, 229, 0.9);
-  border-radius: 999px;
-  padding: 0.25rem 0.7rem;
-  color: rgba(135, 104, 73, 0.85);
-  white-space: normal;
-  line-height: 1.35;
-}
-
-.chain-example-entry {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.25rem;
-}
-
-.chain-example-name {
-  font-weight: 700;
-  color: rgba(214, 141, 59, 0.95);
-}
-
-.chain-example-separator {
-  color: rgba(135, 104, 73, 0.6);
-  margin: 0 0.2rem;
 }
 
 #city-chain-graph svg {

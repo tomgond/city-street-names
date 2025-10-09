@@ -1,11 +1,11 @@
-import './styles.css';
-import 'leaflet/dist/leaflet.css';
 import * as d3 from 'd3';
 import Fuse from 'fuse.js';
 import L from 'leaflet';
 import iconRetina from 'leaflet/dist/images/marker-icon-2x.png';
 import iconDefault from 'leaflet/dist/images/marker-icon.png';
 import iconShadow from 'leaflet/dist/images/marker-shadow.png';
+import 'leaflet/dist/leaflet.css';
+import './styles.css';
 
 L.Icon.Default.mergeOptions({
   iconRetinaUrl: iconRetina,
@@ -57,7 +57,9 @@ const state = {
   },
   graphNodeScoreCache: new Map(),
   cityView: {
-    autoDefaultUsed: false
+    autoDefaultUsed: false,
+    primaryId: '',
+    secondaryId: ''
   },
   defaults: {
     cityId: '',
@@ -578,6 +580,8 @@ function onRouteChange() {
       } else {
         setCityInputValue(elements.city.secondarySelect, elements.city.secondarySuggestions, '');
       }
+      state.cityView.primaryId = primaryId;
+      state.cityView.secondaryId = secondaryId;
       renderCity(primaryId, secondaryId);
       const expectedHash = secondaryId ? '#/city/' + primaryId + '/' + secondaryId : '#/city/' + primaryId;
       if (window.location.hash !== expectedHash) {
@@ -587,6 +591,8 @@ function onRouteChange() {
       state.cityView.autoDefaultUsed = true;
       setCityInputValue(elements.city.primarySelect, elements.city.primarySuggestions, '');
       setCityInputValue(elements.city.secondarySelect, elements.city.secondarySuggestions, '');
+      state.cityView.primaryId = '';
+      state.cityView.secondaryId = '';
       renderCity('', '');
     }
   } else if (view === 'street') {
@@ -677,14 +683,14 @@ async function loadData() {
     const uniquenessList = Array.isArray(uniquenessRaw)
       ? uniquenessRaw
       : state.cities.map(city => ({
-          id: city.id,
-          name: city.name,
-          streetCount: city.streetCount,
-          uniqueStreetCount: city.uniqueStreetCount ?? 0,
-          uniqueStreetShare: city.uniqueStreetShare ?? 0,
-          meanRarityWeight: city.meanRarityWeight ?? 0,
-          medianRarityWeight: city.medianRarityWeight ?? 0
-        }));
+        id: city.id,
+        name: city.name,
+        streetCount: city.streetCount,
+        uniqueStreetCount: city.uniqueStreetCount ?? 0,
+        uniqueStreetShare: city.uniqueStreetShare ?? 0,
+        meanRarityWeight: city.meanRarityWeight ?? 0,
+        medianRarityWeight: city.medianRarityWeight ?? 0
+      }));
 
     uniquenessList.sort((a, b) => {
       const shareDiff = (b.uniqueStreetShare || 0) - (a.uniqueStreetShare || 0);
@@ -765,11 +771,11 @@ async function loadData() {
     state.cityHonors = prepareCityHonorGraph(honorGraph);
     state.cityFuse = state.cities.length
       ? new Fuse(state.cities, {
-          keys: ['name'],
-          threshold: 0.3,
-          minMatchCharLength: 1,
-          ignoreLocation: true
-        })
+        keys: ['name'],
+        threshold: 0.3,
+        minMatchCharLength: 1,
+        ignoreLocation: true
+      })
       : null;
     state.rendered.networkPreview = false;
     state.rendered.graphFull = false;
@@ -782,11 +788,11 @@ async function loadData() {
     }));
     state.fuse = streetItems.length
       ? new Fuse(streetItems, {
-          keys: ['name', 'normalized'],
-          threshold: 0.35,
-          includeScore: true,
-          minMatchCharLength: 2
-        })
+        keys: ['name', 'normalized'],
+        threshold: 0.35,
+        includeScore: true,
+        minMatchCharLength: 2
+      })
       : null;
 
     console.info('[data] fuse index ready', { entries: streetItems.length });
@@ -871,16 +877,16 @@ function prepareCityHonorGraph(raw) {
   const graph = {
     nodes: Array.isArray(raw.nodes)
       ? raw.nodes.map(node => ({
-          ...node,
-          id: String(node.id)
-        }))
+        ...node,
+        id: String(node.id)
+      }))
       : [],
     links: Array.isArray(raw.links)
       ? raw.links.map(link => ({
-          ...link,
-          source: String(link.source),
-          target: String(link.target)
-        }))
+        ...link,
+        source: String(link.source),
+        target: String(link.target)
+      }))
       : [],
     stats
   };
@@ -1379,8 +1385,8 @@ function selectGraphNodes({ limit = 50, communityLimit = 6, focusCityId = '' } =
 
   const candidates = focusSet
     ? Array.from(focusSet)
-        .map(id => state.cityMap.get(id))
-        .filter(Boolean)
+      .map(id => state.cityMap.get(id))
+      .filter(Boolean)
     : state.cities.slice();
 
   if (!candidates.length) {
@@ -1475,9 +1481,9 @@ function selectGraphNodes({ limit = 50, communityLimit = 6, focusCityId = '' } =
   const baseDenominator = focusSet
     ? groups.reduce((sum, entry) => sum + entry.cities.length, 0)
     : groups.reduce((sum, entry) => {
-        const stat = stats.map?.get(entry.key);
-        return sum + (stat ? stat.size : entry.cities.length);
-      }, 0) || groups.reduce((sum, entry) => sum + entry.cities.length, 0);
+      const stat = stats.map?.get(entry.key);
+      return sum + (stat ? stat.size : entry.cities.length);
+    }, 0) || groups.reduce((sum, entry) => sum + entry.cities.length, 0);
 
   const allocations = groups.map(entry => {
     const stat = stats.map?.get(entry.key);
@@ -1821,15 +1827,15 @@ function renderNetworkGraph(target, options = {}) {
     : (d => Math.max(0.18, d.weight * 1.9));
   const xForce = layoutMode === 'community'
     ? d3.forceX(node => {
-        const center = communityCenters && communityCenters.get(communityKeyFor(node));
-        return center ? center.x : width / 2;
-      }).strength(axisStrength)
+      const center = communityCenters && communityCenters.get(communityKeyFor(node));
+      return center ? center.x : width / 2;
+    }).strength(axisStrength)
     : d3.forceX(width / 2).strength(axisStrength);
   const yForce = layoutMode === 'community'
     ? d3.forceY(node => {
-        const center = communityCenters && communityCenters.get(communityKeyFor(node));
-        return center ? center.y : resolvedHeight / 2;
-      }).strength(axisStrength)
+      const center = communityCenters && communityCenters.get(communityKeyFor(node));
+      return center ? center.y : resolvedHeight / 2;
+    }).strength(axisStrength)
     : d3.forceY(resolvedHeight / 2).strength(axisStrength);
 
   const simulation = d3
@@ -1965,12 +1971,12 @@ function renderNetworkGraph(target, options = {}) {
     const topNeighbors = sortedNeighbors.filter(item => Number(item?.[metricKey] || 0) > 0).slice(0, 3);
     const neighborsMarkup = topNeighbors.length
       ? `<div style="margin-top:0.3rem;">דומות מובילות (${metricDisplayName}):<br>${topNeighbors
-          .map(item => {
-            const label = state.cityMap.get(item.city)?.name || item.city;
-            const score = Number(item?.[metricKey] || 0).toFixed(3);
-            return `${label} (${score})`;
-          })
-          .join('<br>')}</div>`
+        .map(item => {
+          const label = state.cityMap.get(item.city)?.name || item.city;
+          const score = Number(item?.[metricKey] || 0).toFixed(3);
+          return `${label} (${score})`;
+        })
+        .join('<br>')}</div>`
       : '';
     const communityLine =
       nodeData.community !== null && nodeData.community !== undefined
@@ -2214,34 +2220,21 @@ function renderCityChainSequence(container, entry, fallbackMessage) {
     const cityBlock = document.createElement('div');
     cityBlock.className = 'chain-step-cities';
 
-    const fromLabel = document.createElement('span');
-    fromLabel.className = 'chain-step-city from';
-    fromLabel.textContent = fromName;
-
-    const arrow = document.createElement('span');
-    arrow.className = 'chain-step-arrow';
-    arrow.textContent = '⇢';
-
-    const toLabel = document.createElement('span');
-    toLabel.className = 'chain-step-city to';
-    toLabel.textContent = toName;
-
-    cityBlock.append(fromLabel, arrow, toLabel);
-    step.appendChild(cityBlock);
-
-    const details = document.createElement('div');
-    details.className = 'chain-step-details';
-
     const relation = document.createElement('span');
     relation.className = 'chain-step-relation';
     relation.append(
       createSpan('בעיר', 'chain-relation-label'),
       createSpan(fromName, 'chain-relation-city from'),
       createSpan('יש רחוב בשם', 'chain-relation-label'),
-      createSpan('->', 'chain-relation-arrow'),
+      createSpan('<-', 'chain-relation-arrow'),
       createSpan(toName, 'chain-relation-city to')
     );
-    details.appendChild(relation);
+
+    cityBlock.appendChild(relation);
+    step.appendChild(cityBlock);
+
+    const details = document.createElement('div');
+    details.className = 'chain-step-details';
 
     const rawCount = Number(edge?.streetCount || 0);
     const streetCount = rawCount > 0
@@ -2258,37 +2251,9 @@ function renderCityChainSequence(container, entry, fallbackMessage) {
       details.appendChild(countBadge);
     }
 
-    const exampleNames = [];
-    if (Array.isArray(edge?.streetNames)) {
-      edge.streetNames.forEach(name => {
-        if (!name) return;
-        exampleNames.push(String(name));
-      });
-    } else if (Array.isArray(edge?.streets)) {
-      edge.streets.forEach(street => {
-        const label = street?.display || street?.name;
-        if (!label) return;
-        exampleNames.push(String(label));
-      });
+    if (details.childNodes.length) {
+      step.appendChild(details);
     }
-
-    const uniqueExamples = Array.from(new Set(exampleNames)).slice(0, 4);
-    if (uniqueExamples.length) {
-      const example = document.createElement('span');
-      example.className = 'chain-step-examples';
-      uniqueExamples.forEach((name, index) => {
-        if (index > 0) {
-          example.appendChild(createSpan('·', 'chain-example-separator'));
-        }
-        const entry = document.createElement('span');
-        entry.className = 'chain-example-entry';
-        entry.append(createSpan(name, 'chain-example-name'));
-        example.appendChild(entry);
-      });
-      details.appendChild(example);
-    }
-
-    step.appendChild(details);
     fragment.appendChild(step);
   });
 
@@ -2359,18 +2324,33 @@ function renderCityHonorGraph(force = false) {
     _target: link.target
   }));
 
+  const pathEdgeKeys = state.cityHonors.pathEdgeKeys || new Set();
+  const cycleEdgeKeys = state.cityHonors.cycleEdgeKeys || new Set();
+  const pathNodeIds = state.cityHonors.pathNodeIds || new Set();
+  const cycleNodeIds = state.cityHonors.cycleNodeIds || new Set();
+
   const degreeById = new Map();
+  const ensureDegree = id => {
+    const key = String(id);
+    if (!degreeById.has(key)) {
+      degreeById.set(key, { in: 0, out: 0 });
+    }
+    return degreeById.get(key);
+  };
+
   links.forEach(link => {
     const sourceId = String(link.source);
     const targetId = String(link.target);
-    degreeById.set(sourceId, (degreeById.get(sourceId) || 0) + 1);
-    degreeById.set(targetId, (degreeById.get(targetId) || 0) + 1);
+    ensureDegree(sourceId).out += 1;
+    ensureDegree(targetId).in += 1;
   });
 
   const keptNodeIds = new Set();
   nodes.forEach(node => {
     const id = String(node.id);
-    if ((degreeById.get(id) || 0) > 1) {
+    const degree = degreeById.get(id) || { in: 0, out: 0 };
+    const hasIncoming = (degree.in || 0) > 0;
+    if (hasIncoming || pathNodeIds.has(id) || cycleNodeIds.has(id)) {
       keptNodeIds.add(id);
     }
   });
@@ -2386,7 +2366,7 @@ function renderCityHonorGraph(force = false) {
   const removedLinks = graphData.links.length - links.length;
 
   if (removedNodes > 0 || removedLinks > 0) {
-    console.info('[viz] city honor graph pruning', {
+    console.info('[viz] city honor graph pruning (incoming filter)', {
       originalNodes: graphData.nodes.length,
       originalLinks: graphData.links.length,
       removedNodes,
@@ -2395,16 +2375,162 @@ function renderCityHonorGraph(force = false) {
   }
 
   if (!nodes.length || !links.length) {
-    container.innerHTML = '<p class="empty-state">לאחר סינון ערים עם חיבור בודד לא נותרו קשרים להצגה.</p>';
+    container.innerHTML = '<p class="empty-state">לאחר הסרת ערים ללא רחובות נכנסים לא נותרו קשרים להצגה.</p>';
     return;
   }
 
   const nodeLookup = new Map(nodes.map(node => [String(node.id), node]));
 
-  const pathEdgeKeys = state.cityHonors.pathEdgeKeys || new Set();
-  const cycleEdgeKeys = state.cityHonors.cycleEdgeKeys || new Set();
-  const pathNodeIds = state.cityHonors.pathNodeIds || new Set();
-  const cycleNodeIds = state.cityHonors.cycleNodeIds || new Set();
+  const outboundMap = new Map();
+  links.forEach(link => {
+    const sourceId = String(link.source);
+    const targetId = String(link.target);
+    if (!outboundMap.has(sourceId)) {
+      outboundMap.set(sourceId, []);
+    }
+    outboundMap.get(sourceId).push(targetId);
+  });
+
+  const stats = graphData.stats || {};
+  const layoutAnchors = new Map();
+  const assignAnchor = (id, x, y, strength = 1, level = 0) => {
+    const key = String(id);
+    if (!key || !nodeLookup.has(key)) return;
+    const existing = layoutAnchors.get(key);
+    if (existing) {
+      const totalStrength = Math.min(3, (existing.strength || 0) + strength);
+      const weightedX =
+        ((existing.x || 0) * (existing.strength || 0) + x * strength) /
+        Math.max(0.001, (existing.strength || 0) + strength);
+      const weightedY =
+        ((existing.y || 0) * (existing.strength || 0) + y * strength) /
+        Math.max(0.001, (existing.strength || 0) + strength);
+      const nextLevel =
+        existing.level === undefined || existing.level === null
+          ? level
+          : level === undefined || level === null
+            ? existing.level
+            : Math.min(existing.level, level);
+      layoutAnchors.set(key, {
+        x: weightedX,
+        y: weightedY,
+        strength: totalStrength,
+        level: nextLevel ?? existing.level ?? 0
+      });
+    } else {
+      layoutAnchors.set(key, { x, y, strength, level });
+    }
+  };
+
+  const computeUniqueSequence = cities => {
+    if (!Array.isArray(cities) || !cities.length) return [];
+    const seen = new Set();
+    const unique = [];
+    cities.forEach(entry => {
+      const key = String(entry);
+      if (!key || seen.has(key)) return;
+      seen.add(key);
+      unique.push(key);
+    });
+    return unique;
+  };
+
+  const longestPathCities = computeUniqueSequence(stats.longestPath?.cities);
+  if (longestPathCities.length) {
+    const marginX = Math.min(140, width * 0.14);
+    const span = Math.max(width - marginX * 2, 320);
+    const step = longestPathCities.length > 1 ? span / (longestPathCities.length - 1) : 0;
+    longestPathCities.forEach((cityId, index) => {
+      const x = marginX + step * index;
+      const y = Math.max(80, height * 0.28);
+      assignAnchor(cityId, x, y, 1.8, 0);
+    });
+  }
+
+  const longestCycleCities = computeUniqueSequence(stats.longestCycle?.cities);
+  if (longestCycleCities.length) {
+    const centerX = width / 2;
+    const centerY = Math.min(height * 0.7, height - 160);
+    const baseRadius = Math.min(width, height) * 0.24 + longestCycleCities.length * 4;
+    longestCycleCities.forEach((cityId, index) => {
+      const angle = (index / longestCycleCities.length) * Math.PI * 2;
+      const x = centerX + Math.cos(angle) * baseRadius;
+      const y = centerY + Math.sin(angle) * baseRadius * 0.55;
+      assignAnchor(cityId, x, y, 1.4, 1);
+    });
+  }
+
+  const propagationQueue = Array.from(layoutAnchors.entries()).map(([id, anchor]) => ({
+    id,
+    level: anchor.level ?? 0
+  }));
+  const seenAnchors = new Set(layoutAnchors.keys());
+  while (propagationQueue.length) {
+    const current = propagationQueue.shift();
+    const baseAnchor = layoutAnchors.get(current.id);
+    if (!baseAnchor) continue;
+    const neighbors = outboundMap.get(current.id) || [];
+    if (!neighbors.length) continue;
+    const spread = Math.max(90, 180 - neighbors.length * 18);
+    neighbors.forEach((neighborId, neighborIndex) => {
+      const key = String(neighborId);
+      if (!key || !nodeLookup.has(key) || seenAnchors.has(key)) return;
+      const offsetIndex = neighborIndex - (neighbors.length - 1) / 2;
+      const targetX = baseAnchor.x + offsetIndex * spread;
+      const baseLevel = baseAnchor.level ?? current.level ?? 0;
+      const targetY = Math.min(height - 80, baseAnchor.y + 130);
+      assignAnchor(key, targetX, targetY, 0.9, baseLevel + 1);
+      seenAnchors.add(key);
+      propagationQueue.push({ id: key, level: baseLevel + 1 });
+    });
+  }
+
+  const unanchoredNodes = nodes.filter(node => !layoutAnchors.has(String(node.id)));
+  if (unanchoredNodes.length) {
+    const centerX = width / 2;
+    const baseRadius = Math.min(width, height) * 0.32;
+    const startAngle = Math.PI / 8;
+    unanchoredNodes.forEach((node, index) => {
+      const angle = startAngle + (index / Math.max(1, unanchoredNodes.length)) * Math.PI * 1.6;
+      const x = centerX + Math.cos(angle) * baseRadius;
+      const y = height * 0.42 + Math.sin(angle) * baseRadius * 0.45;
+      assignAnchor(node.id, x, y, 0.7, 1);
+    });
+  }
+
+  const aggregatedGroups = new Map();
+  nodes.forEach(node => {
+    if (!node || !node.aggregated) return;
+    const targetId = String(node.aggregateTarget ?? '');
+    if (!aggregatedGroups.has(targetId)) {
+      aggregatedGroups.set(targetId, []);
+    }
+    aggregatedGroups.get(targetId).push(String(node.id));
+  });
+
+  aggregatedGroups.forEach((groupIds, targetId) => {
+    const anchor = layoutAnchors.get(targetId) || { x: width / 2, y: Math.min(height * 0.65, height - 140), level: 1 };
+    const radius = 70 + groupIds.length * 6;
+    groupIds.forEach((nodeId, index) => {
+      const angle = (index / groupIds.length) * Math.PI * 1.2 - Math.PI * 0.6;
+      const x = anchor.x + Math.cos(angle) * radius;
+      const y = Math.min(height - 60, anchor.y + Math.sin(angle) * radius * 0.7);
+      assignAnchor(nodeId, x, y, 0.6, (anchor.level ?? 1) + 1);
+    });
+  });
+
+  nodes.forEach(node => {
+    const anchor = layoutAnchors.get(String(node.id));
+    if (anchor) {
+      node.x = anchor.x + (Math.random() - 0.5) * 18;
+      node.y = anchor.y + (Math.random() - 0.5) * 18;
+      node._layoutAnchor = anchor;
+    } else {
+      node.x = width / 2 + (Math.random() - 0.5) * 220;
+      node.y = height / 2 + (Math.random() - 0.5) * 220;
+      node._layoutAnchor = { x: width / 2, y: height / 2, strength: 0.06, level: 1 };
+    }
+  });
 
   const linkGroup = svg.append('g').attr('class', 'chain-links');
   const nodeGroup = svg.append('g').attr('class', 'chain-nodes');
@@ -2549,7 +2675,7 @@ function renderCityHonorGraph(force = false) {
 
   const updatePositions = () => {
     nodes.forEach(node => clampNodeToBounds(node, width, height, 40));
-    linkSelection.each(function(d) {
+    linkSelection.each(function (d) {
       const { x1, y1, x2, y2 } = computeLinkEndpoints(d);
       d3.select(this)
         .attr('x1', x1)
@@ -2577,6 +2703,10 @@ function renderCityHonorGraph(force = false) {
       node.fy = node.y;
       node.vx = 0;
       node.vy = 0;
+      if (node._layoutAnchor) {
+        node._layoutAnchor.x = node.x;
+        node._layoutAnchor.y = node.y;
+      }
       updatePositions();
     })
     .on('end', event => {
@@ -2585,6 +2715,10 @@ function renderCityHonorGraph(force = false) {
       node.fy = node.y;
       node.vx = 0;
       node.vy = 0;
+      if (node._layoutAnchor) {
+        node._layoutAnchor.x = node.x;
+        node._layoutAnchor.y = node.y;
+      }
       updatePositions();
     });
 
@@ -2595,12 +2729,27 @@ function renderCityHonorGraph(force = false) {
       d3
         .forceLink(links)
         .id(d => d.id)
-        .distance(d => 150 - Math.min(d.streetCount || (d.streets ? d.streets.length : 1), 5) * 8)
-        .strength(0.4)
+        .distance(d => {
+          const count = Number(d.streetCount || (Array.isArray(d.streets) ? d.streets.length : 1) || 1);
+          const scaled = Math.max(0, Math.min(count, 12));
+          return 190 - scaled * 8;
+        })
+        .strength(0.55)
     )
-    .force('charge', d3.forceManyBody().strength(-420))
-    .force('center', d3.forceCenter(width / 2, height / 2))
-    .force('collision', d3.forceCollide().radius(d => getHonorNodeRadius(d) + 8));
+    .force(
+      'x',
+      d3
+        .forceX(d => (d._layoutAnchor ? d._layoutAnchor.x : width / 2))
+        .strength(d => Math.max(0.04, Math.min(d._layoutAnchor?.strength ?? 0.08, 2.5)))
+    )
+    .force(
+      'y',
+      d3
+        .forceY(d => (d._layoutAnchor ? d._layoutAnchor.y : height / 2))
+        .strength(d => Math.max(0.04, Math.min(d._layoutAnchor?.strength ?? 0.08, 2.5)))
+    )
+    .force('charge', d3.forceManyBody().strength(-320))
+    .force('collision', d3.forceCollide().radius(d => getHonorNodeRadius(d) + 12).iterations(2));
 
   simulation.on('tick', updatePositions);
   simulation.on('end', () => {
@@ -2785,8 +2934,12 @@ function getUniqueStreetExamples(cityId, limit = 6) {
 }
 
 function renderCity(primaryId, secondaryId = '') {
-  const city = state.cityMap.get(primaryId);
-  if (!city) {
+  const normalizedPrimaryId = primaryId ? String(primaryId) : '';
+  const normalizedSecondaryId = secondaryId ? String(secondaryId) : '';
+
+  if (!normalizedPrimaryId || !state.cityMap.has(normalizedPrimaryId)) {
+    state.cityView.primaryId = '';
+    state.cityView.secondaryId = '';
     state.cityView.autoDefaultUsed = true;
     setCityInputValue(elements.city.primarySelect, elements.city.primarySuggestions, '');
     setCityInputValue(elements.city.secondarySelect, elements.city.secondarySuggestions, '');
@@ -2798,32 +2951,50 @@ function renderCity(primaryId, secondaryId = '') {
     return;
   }
 
-  state.cityView.autoDefaultUsed = true;
-  setCityInputValue(elements.city.primarySelect, elements.city.primarySuggestions, primaryId);
+  const city = state.cityMap.get(normalizedPrimaryId);
+  if (!city) {
+    state.cityView.primaryId = '';
+    state.cityView.secondaryId = '';
+    state.cityView.autoDefaultUsed = true;
+    setCityInputValue(elements.city.primarySelect, elements.city.primarySuggestions, '');
+    setCityInputValue(elements.city.secondarySelect, elements.city.secondarySuggestions, '');
+    elements.city.summary.innerHTML = '<p>בחרו עיר כדי לראות את הנתונים.</p>';
+    elements.city.chart.innerHTML = '';
+    elements.city.similarList.innerHTML = '';
+    elements.city.sharedList.innerHTML = '';
+    elements.city.overlap.innerHTML = '';
+    return;
+  }
 
-  const similarity = state.similarityTop.get(primaryId) || [];
+  state.cityView.primaryId = normalizedPrimaryId;
+  state.cityView.secondaryId = state.cityMap.has(normalizedSecondaryId) ? normalizedSecondaryId : '';
+
+  state.cityView.autoDefaultUsed = true;
+  setCityInputValue(elements.city.primarySelect, elements.city.primarySuggestions, normalizedPrimaryId);
+
+  const similarity = state.similarityTop.get(normalizedPrimaryId) || [];
   const uniqueCount = city.uniqueStreetCount ?? 0;
   const uniqueShare = typeof city.uniqueStreetShare === 'number' ? city.uniqueStreetShare : city.streetCount ? uniqueCount / city.streetCount : 0;
   const meanRarity = typeof city.meanRarityWeight === 'number' ? city.meanRarityWeight : 0;
   const medianRarity = typeof city.medianRarityWeight === 'number' ? city.medianRarityWeight : 0;
-  const uniquenessRank = state.cityUniquenessRank.get(String(primaryId)) ?? city.uniquenessRank ?? null;
+  const uniquenessRank = state.cityUniquenessRank.get(String(normalizedPrimaryId)) ?? city.uniquenessRank ?? null;
   const rankLabel = uniquenessRank ? `#${uniquenessRank}` : '—';
-  const uniqueExamples = getUniqueStreetExamples(primaryId, 6);
+  const uniqueExamples = getUniqueStreetExamples(normalizedPrimaryId, 6);
   const uniqueSection = uniqueExamples.length
     ? `
       <div class="city-unique-examples">
         <h3>דוגמאות לרחובות ייחודיים</h3>
         <ul class="unique-street-list">
           ${uniqueExamples
-            .map(
-              street => `
+      .map(
+        street => `
                 <li>
                   <span class="unique-street-name">${street.display}</span>
                   <span class="unique-street-rarity">משקל נדירות: ${formatRarityWeight(street.rarity, 1)}</span>
                 </li>
               `
-            )
-            .join('')}
+      )
+      .join('')}
         </ul>
       </div>
     `
@@ -2861,53 +3032,104 @@ function renderCity(primaryId, secondaryId = '') {
   `;
 
   renderCityChart(city, similarity);
-  const selectedPartnerId = secondaryId || '';
-  renderCitySimilarButtons(primaryId, similarity, selectedPartnerId);
+  const selectedPartnerId = state.cityView.secondaryId || '';
+  renderCitySimilarButtons(normalizedPrimaryId, similarity, selectedPartnerId);
   if (selectedPartnerId) {
     setCityInputValue(elements.city.secondarySelect, elements.city.secondarySuggestions, selectedPartnerId);
   } else {
     setCityInputValue(elements.city.secondarySelect, elements.city.secondarySuggestions, '');
   }
-  renderSharedStreets(primaryId, selectedPartnerId || null);
-  renderOverlap(primaryId, selectedPartnerId || '');
+  renderSharedStreets(normalizedPrimaryId, selectedPartnerId || null);
+  renderOverlap(normalizedPrimaryId, selectedPartnerId || '');
 }
 
 function renderCityChart(city, similarity) {
   const container = elements.city.chart;
   if (!container) return;
   container.innerHTML = '';
+  container.style.minHeight = '';
   if (!similarity.length) {
     container.innerHTML = '<p>לא נמצאו ערים עם דמיון משמעותי.</p>';
     return;
   }
 
   const data = similarity.slice(0, 10);
-  const width = container.clientWidth || 500;
-  const height = 340;
-  const margin = { top: 10, right: 20, bottom: 20, left: 120 };
+  const labelAccessor = item => state.cityMap.get(item.city)?.name || item.city;
+  const bounds = container.getBoundingClientRect();
+  const containerWidth = Math.max(bounds.width || container.clientWidth || 0, 320);
+  const longestLabelLength = data.reduce((max, item) => {
+    const label = labelAccessor(item) || '';
+    return Math.max(max, label.length);
+  }, 0);
+
+  const margin = {
+    top: 18,
+    right: 28,
+    bottom: 36,
+    left: Math.min(280, Math.max(140, longestLabelLength * 13))
+  };
+
+  const barHeight = 38;
+  const chartHeight = Math.max(
+    220,
+    margin.top + margin.bottom + data.length * barHeight
+  );
+  const chartWidth = Math.max(containerWidth, margin.left + 160);
+  const tickCount = Math.max(3, Math.min(6, Math.round(chartWidth / 160)));
+
+  container.style.minHeight = `${chartHeight}px`;
 
   const svg = d3
     .select(container)
     .append('svg')
-    .attr('width', width)
-    .attr('height', height);
+    .attr('viewBox', `0 0 ${chartWidth} ${chartHeight}`)
+    .attr('preserveAspectRatio', 'xMidYMid meet')
+    .attr('width', chartWidth)
+    .attr('height', chartHeight)
+    .style('width', '100%')
+    .style('height', `${chartHeight}px`)
+    .style('max-width', '100%')
+    .style('display', 'block')
+    .style('overflow', 'visible')
+    .classed('city-similarity-chart', true);
 
-  console.debug('[viz] network svg size', { width, height });
-
+  const maxValue = d3.max(data, d => d.weightedJaccard) || 0.1;
   const x = d3
     .scaleLinear()
-    .domain([0, d3.max(data, d => d.weightedJaccard) || 0.1])
-    .range([margin.left, width - margin.right]);
+    .domain([0, maxValue])
+    .nice()
+    .range([margin.left, chartWidth - margin.right]);
 
   const y = d3
     .scaleBand()
     .domain(data.map(item => item.city))
-    .range([margin.top, height - margin.bottom])
-    .padding(0.2);
+    .range([margin.top, chartHeight - margin.bottom])
+    .padding(Math.min(0.32, Math.max(0.18, 1 - data.length * 0.05)));
 
-  const color = d3.scaleSequential(d3.interpolatePlasma).domain([0, data.length]);
+  const color = d3.scaleSequential(d3.interpolatePlasma).domain([0, Math.max(1, data.length - 1)]);
+  const tickPaddingValue = Math.min(36, Math.max(16, margin.left * 0.18));
+  const labelOffset = tickPaddingValue + 8;
 
-  svg
+  const grid = svg
+    .append('g')
+    .attr('class', 'chart-grid')
+    .attr('transform', `translate(0, ${chartHeight - margin.bottom})`)
+    .call(
+      d3
+        .axisBottom(x)
+        .ticks(tickCount)
+        .tickSize(-(chartHeight - margin.top - margin.bottom))
+        .tickFormat('')
+    );
+
+  grid
+    .selectAll('line')
+    .attr('stroke', 'rgba(135, 104, 73, 0.18)')
+    .attr('stroke-dasharray', '3 4');
+
+  grid.select('.domain').remove();
+
+  const bars = svg
     .append('g')
     .selectAll('rect')
     .data(data)
@@ -2916,14 +3138,20 @@ function renderCityChart(city, similarity) {
     .attr('x', margin.left)
     .attr('y', d => y(d.city))
     .attr('height', y.bandwidth())
-    .attr('width', d => x(d.weightedJaccard) - margin.left)
+    .attr('width', d => Math.max(0, x(d.weightedJaccard) - margin.left))
     .attr('fill', (_, i) => color(i))
     .attr('rx', 10)
+    .style('cursor', 'pointer')
     .on('click', (_, d) => {
       renderSharedStreets(city.id, d.city);
       setCityInputValue(elements.city.secondarySelect, elements.city.secondarySuggestions, d.city);
       window.location.hash = `#/city/${city.id}/${d.city}`;
     });
+
+  bars.append('title').text(d => {
+    const label = labelAccessor(d);
+    return `${label}\nמדד דמיון משוקלל: ${d.weightedJaccard.toFixed(3)}`;
+  });
 
   const yAxis = svg
     .append('g')
@@ -2931,32 +3159,48 @@ function renderCityChart(city, similarity) {
     .call(
       d3
         .axisLeft(y)
-        .tickFormat(id => state.cityMap.get(id)?.name || id)
+        .tickFormat(labelAccessor)
         .tickSize(0)
-        .tickPadding(12)
+        .tickPadding(tickPaddingValue)
     );
 
-  yAxis.selectAll('text')
+  yAxis
+    .selectAll('text')
     .style('fill', 'var(--text)')
     .style('font-weight', '600')
+    .style('font-size', '0.95rem')
     .attr('text-anchor', 'end')
-    .attr('dx', '-0.35rem');
+    .attr('x', -labelOffset)
+    .attr('dy', '0.32em')
+    .attr('direction', 'rtl')
+    .style('paint-order', 'stroke fill')
+    .style('stroke', 'rgba(255, 255, 255, 0.9)')
+    .style('stroke-width', '4px');
 
-  yAxis.select('.domain').remove();
+  yAxis
+    .select('.domain')
+    .attr('stroke', 'rgba(135, 104, 73, 0.4)')
+    .attr('stroke-width', 1.2);
 
   const xAxis = svg
     .append('g')
-    .attr('transform', `translate(0, ${height - margin.bottom})`)
+    .attr('transform', `translate(0, ${chartHeight - margin.bottom})`)
     .call(
       d3
         .axisBottom(x)
-        .ticks(5)
+        .ticks(tickCount)
         .tickFormat(value => value.toFixed(2))
-        .tickSize(0)
+        .tickSizeOuter(0)
     );
 
-  xAxis.selectAll('text').style('fill', 'var(--text)');
+  xAxis
+    .selectAll('text')
+    .style('fill', 'var(--text)')
+    .style('font-size', '0.85rem')
+    .attr('dy', '1.2em');
+
   xAxis.select('.domain').remove();
+
 }
 
 function renderCitySimilarButtons(primaryId, similarity, activeCityId = '') {
@@ -2976,6 +3220,8 @@ function renderCitySimilarButtons(primaryId, similarity, activeCityId = '') {
     const cityLabel = state.cityMap.get(item.city)?.name || item.city;
     button.textContent = cityLabel + ' (' + item.weightedJaccard.toFixed(3) + ')';
     button.addEventListener('click', () => {
+      state.cityView.primaryId = primaryId;
+      state.cityView.secondaryId = item.city;
       setActiveSimilarCity(item.city);
       setCityInputValue(elements.city.secondarySelect, elements.city.secondarySuggestions, item.city);
       renderSharedStreets(primaryId, item.city);
@@ -3256,6 +3502,8 @@ function setupCityHandlers() {
         const companionId = getSelectedCityId(secondaryInput);
         const hasCompanion = companionId && state.cityMap.has(companionId);
         const partnerId = hasCompanion ? companionId : '';
+        state.cityView.primaryId = city.id;
+        state.cityView.secondaryId = partnerId;
         renderCity(city.id, partnerId);
         const targetHash = partnerId ? `#/city/${city.id}/${partnerId}` : `#/city/${city.id}`;
         if (window.location.hash !== targetHash) {
@@ -3264,6 +3512,8 @@ function setupCityHandlers() {
       },
       onClear: () => {
         state.cityView.autoDefaultUsed = true;
+        state.cityView.primaryId = '';
+        state.cityView.secondaryId = '';
         renderCity('', '');
         if (secondaryInput) {
           setCityInputValue(secondaryInput, secondarySuggestions, '');
@@ -3282,12 +3532,16 @@ function setupCityHandlers() {
         const primaryId = getSelectedCityId(primaryInput);
         if (!primaryId) {
           setCityInputValue(primaryInput, primarySuggestions, city.id);
+          state.cityView.primaryId = city.id;
+          state.cityView.secondaryId = '';
           renderCity(city.id, '');
           if (window.location.hash !== `#/city/${city.id}`) {
             window.location.hash = `#/city/${city.id}`;
           }
           return;
         }
+        state.cityView.primaryId = primaryId;
+        state.cityView.secondaryId = city.id;
         renderSharedStreets(primaryId, city.id);
         renderOverlap(primaryId, city.id);
         const targetHash = `#/city/${primaryId}/${city.id}`;
@@ -3299,6 +3553,7 @@ function setupCityHandlers() {
         state.cityView.autoDefaultUsed = true;
         const primaryId = getSelectedCityId(primaryInput);
         if (!primaryId) return;
+        state.cityView.secondaryId = '';
         renderSharedStreets(primaryId, '');
         renderOverlap(primaryId, '');
         const targetHash = `#/city/${primaryId}`;
@@ -3854,14 +4109,14 @@ function renderStreetDetails(streetKey, updateHash = true) {
       </thead>
       <tbody>
         ${rows
-          .map(city => `
+      .map(city => `
             <tr>
               <td><a href="#/city/${city.id}">${city.name}</a></td>
               <td>${city.streetDisplay || entry.display}</td>
               <td>${city.streetCount.toLocaleString()}</td>
             </tr>
           `)
-          .join('')}
+      .join('')}
       </tbody>
     </table>
   `;
@@ -3957,6 +4212,14 @@ function handleResize() {
   } else if (view === 'graph') {
     state.rendered.graphFull = false;
     renderGraphView(true);
+  } else if (view === 'city') {
+    const primaryId = state.cityView?.primaryId || '';
+    const secondaryId = state.cityView?.secondaryId || '';
+    if (primaryId) {
+      renderCity(primaryId, secondaryId || '');
+    } else {
+      renderCity('', '');
+    }
   }
 }
 
@@ -3975,9 +4238,3 @@ function init() {
 }
 
 init();
-
-
-
-
-
-
