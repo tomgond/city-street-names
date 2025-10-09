@@ -713,6 +713,19 @@ button:disabled {
   stroke-linejoin: round;
 }
 
+.city-chart-y-label-bg {
+  fill: rgba(255, 255, 255, 0.9);
+  stroke: rgba(135, 104, 73, 0.25);
+  stroke-width: 1px;
+}
+
+.city-chart-y-label-text {
+  paint-order: stroke fill;
+  stroke: rgba(255, 255, 255, 0.9);
+  stroke-width: 3px;
+  stroke-linejoin: round;
+}
+
 .network-graph .graph-label.is-dimmed {
   opacity: 0.28;
 }

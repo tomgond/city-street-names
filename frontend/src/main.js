@@ -3079,6 +3079,10 @@ function renderCityChart(city, similarity) {
 
   container.style.minHeight = `${chartHeight}px`;
 
+  const rootStyles = getComputedStyle(document.documentElement);
+  const textColor = (rootStyles.getPropertyValue('--text') || '').trim() || '#2e2216';
+  const labelStroke = 'rgba(255, 255, 255, 0.9)';
+
   const svg = d3
     .select(container)
     .append('svg')
@@ -3107,8 +3111,6 @@ function renderCityChart(city, similarity) {
     .padding(Math.min(0.32, Math.max(0.18, 1 - data.length * 0.05)));
 
   const color = d3.scaleSequential(d3.interpolatePlasma).domain([0, Math.max(1, data.length - 1)]);
-  const tickPaddingValue = Math.min(36, Math.max(16, margin.left * 0.18));
-  const labelOffset = tickPaddingValue + 8;
 
   const grid = svg
     .append('g')
@@ -3159,28 +3161,74 @@ function renderCityChart(city, similarity) {
     .call(
       d3
         .axisLeft(y)
-        .tickFormat(labelAccessor)
+        .tickFormat('')
         .tickSize(0)
-        .tickPadding(tickPaddingValue)
     );
-
-  yAxis
-    .selectAll('text')
-    .style('fill', 'var(--text)')
-    .style('font-weight', '600')
-    .style('font-size', '0.95rem')
-    .attr('text-anchor', 'end')
-    .attr('x', -labelOffset)
-    .attr('dy', '0.32em')
-    .attr('direction', 'rtl')
-    .style('paint-order', 'stroke fill')
-    .style('stroke', 'rgba(255, 255, 255, 0.9)')
-    .style('stroke-width', '4px');
 
   yAxis
     .select('.domain')
     .attr('stroke', 'rgba(135, 104, 73, 0.4)')
     .attr('stroke-width', 1.2);
+
+  const labelPadding = 10;
+  const labelGroup = svg
+    .append('g')
+    .attr('class', 'city-chart-y-labels')
+    .attr('pointer-events', 'none');
+
+  const labelNodes = labelGroup
+    .selectAll('g')
+    .data(data)
+    .enter()
+    .append('g')
+    .attr('class', 'city-chart-y-label')
+    .attr('transform', d => `translate(0, ${y(d.city) + y.bandwidth() / 2})`);
+
+  labelNodes
+    .append('text')
+    .attr('class', 'city-chart-y-label-text')
+    .attr('alignment-baseline', 'middle')
+    .attr('direction', 'rtl')
+    .attr('fill', textColor)
+    .style('font-weight', '600')
+    .style('font-size', '0.95rem')
+    .style('stroke', labelStroke)
+    .style('stroke-width', '3px')
+    .style('paint-order', 'stroke fill')
+    .text(labelAccessor);
+
+  labelNodes
+    .insert('rect', 'text')
+    .attr('class', 'city-chart-y-label-bg')
+    .attr('fill', 'rgba(255, 255, 255, 0.92)')
+    .attr('stroke', 'rgba(135, 104, 73, 0.25)')
+    .attr('stroke-width', 1);
+
+  labelNodes.each(function (d) {
+    const group = d3.select(this);
+    const textNode = group.select('text').node();
+    const rect = group.select('rect');
+    if (!textNode || !rect.node()) return;
+    const bbox = textNode.getBBox();
+    const rectWidth = bbox.width + labelPadding * 1.8;
+    const rectHeight = bbox.height + 4;
+    const xPosition = margin.left - 12 - rectWidth;
+
+    group.attr('transform', `translate(${xPosition}, ${y(d.city) + y.bandwidth() / 2})`);
+
+    rect
+      .attr('x', 0)
+      .attr('y', -rectHeight / 2)
+      .attr('width', rectWidth)
+      .attr('height', rectHeight)
+      .attr('rx', 6)
+      .attr('ry', 6);
+
+    group
+      .select('text')
+      .attr('x', rectWidth - labelPadding * 0.9)
+      .attr('text-anchor', 'start');
+  });
 
   const xAxis = svg
     .append('g')
@@ -3195,9 +3243,12 @@ function renderCityChart(city, similarity) {
 
   xAxis
     .selectAll('text')
-    .style('fill', 'var(--text)')
+    .style('fill', textColor)
     .style('font-size', '0.85rem')
-    .attr('dy', '1.2em');
+    .attr('dy', '1.2em')
+    .style('paint-order', 'stroke fill')
+    .style('stroke', labelStroke)
+    .style('stroke-width', '4px');
 
   xAxis.select('.domain').remove();
 
