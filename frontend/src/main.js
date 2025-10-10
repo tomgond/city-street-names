@@ -1290,6 +1290,7 @@ function updateCommunityStreetSignatures() {
   }
 
   const cityCommunity = new Map();
+  const communitySizes = new Map();
   state.cities.forEach(city => {
     if (!city) return;
     const id = String(city.id || '');
@@ -1299,6 +1300,7 @@ function updateCommunityStreetSignatures() {
       : null;
     if (community === null) return;
     cityCommunity.set(id, community);
+    communitySizes.set(community, (communitySizes.get(community) || 0) + 1);
   });
 
   if (cityCommunity.size === 0) {
@@ -1364,19 +1366,42 @@ function updateCommunityStreetSignatures() {
 
   accumulator.forEach((streets, communityId) => {
     if (!streets || streets.length === 0) return;
-    const sorted = streets
-      .slice()
+    const communitySize = communitySizes.get(communityId) || 0;
+    const ranked = streets
+      .map(street => {
+        const cityCount = Number(street.cityCount || 0);
+        const rarityWeight = Number(street.rarityWeight || 0);
+        const rawShare = communitySize > 0 && cityCount > 0 ? cityCount / communitySize : 0;
+        const communityShare = rawShare > 0 ? Math.min(1, Math.max(0, rawShare)) : 0;
+        const frequencyScore = cityCount > 0 ? Math.log1p(cityCount) : 0;
+        const reliabilityWeight = cityCount >= 4 ? 1.25 : cityCount >= 3 ? 1.1 : cityCount >= 2 ? 1 : 0.6;
+        const score = communityShare > 0 ? communityShare * frequencyScore * reliabilityWeight : 0;
+        return {
+          ...street,
+          cityCount,
+          rarityWeight,
+          communitySize,
+          communityShare,
+          score
+        };
+      })
       .sort((a, b) => {
+        const scoreDiff = (b.score || 0) - (a.score || 0);
+        if (Math.abs(scoreDiff) > 1e-6) return scoreDiff;
+        const shareDiff = (b.communityShare || 0) - (a.communityShare || 0);
+        if (Math.abs(shareDiff) > 1e-6) return shareDiff;
         const countDiff = (b.cityCount || 0) - (a.cityCount || 0);
         if (countDiff !== 0) return countDiff;
         const rarityDiff = (b.rarityWeight || 0) - (a.rarityWeight || 0);
         if (Math.abs(rarityDiff) > 1e-6) return rarityDiff;
         return HEBREW_COLLATOR.compare(a.display || '', b.display || '');
       });
-    const trimmed = sorted.slice(0, 60);
+    const trimmed = ranked
+      .map(({ score, ...rest }) => rest)
+      .slice(0, 60);
     summaryMap.set(communityId, {
       communityId,
-      total: sorted.length,
+      total: ranked.length,
       streets: trimmed
     });
   });
