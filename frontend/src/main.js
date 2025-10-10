@@ -1315,10 +1315,8 @@ function updateCommunityStreetSignatures() {
     const cityEntries = Array.isArray(entry.cities) ? entry.cities : [];
     if (!cityEntries.length) return;
 
-    let communityId = null;
-    let valid = true;
-    let cityCount = 0;
     const seenCities = new Set();
+    const countsByCommunity = new Map();
 
     for (const cityEntry of cityEntries) {
       if (!cityEntry) continue;
@@ -1326,70 +1324,109 @@ function updateCommunityStreetSignatures() {
       if (!cityId || seenCities.has(cityId)) continue;
       seenCities.add(cityId);
       if (!cityCommunity.has(cityId)) {
-        valid = false;
-        break;
+        continue;
       }
-      const assigned = cityCommunity.get(cityId);
-      if (communityId === null) {
-        communityId = assigned;
-      } else if (communityId !== assigned) {
-        valid = false;
-        break;
+      const assigned = Number(cityCommunity.get(cityId));
+      if (!Number.isFinite(assigned)) {
+        continue;
       }
-      cityCount += 1;
+      countsByCommunity.set(assigned, (countsByCommunity.get(assigned) || 0) + 1);
     }
 
-    if (!valid || communityId === null || cityCount === 0) {
+    const totalCityCount = seenCities.size;
+    if (!totalCityCount || countsByCommunity.size === 0) {
       return;
     }
 
-    const normalizedCommunity = Number(communityId);
-    if (!Number.isFinite(normalizedCommunity)) {
-      return;
-    }
+    countsByCommunity.forEach((cityCount, communityId) => {
+      const communitySize = communitySizes.get(communityId) || 0;
+      if (!communitySize) return;
 
-    if (!accumulator.has(normalizedCommunity)) {
-      accumulator.set(normalizedCommunity, []);
-    }
+      const normalizedCommunity = Number(communityId);
+      if (!Number.isFinite(normalizedCommunity)) return;
 
-    const display = typeof entry.display === 'string' && entry.display.trim()
-      ? entry.display.trim()
-      : streetKey;
+      const dominance = cityCount > 0 ? cityCount / totalCityCount : 0;
+      const coverage = communitySize > 0 ? cityCount / communitySize : 0;
 
-    accumulator.get(normalizedCommunity).push({
-      key: streetKey,
-      display,
-      cityCount,
-      rarityWeight: Number(entry.rarityWeight || 0)
+      const isSmallCommunity = communitySize <= 3;
+      if (cityCount < 2 && !isSmallCommunity) {
+        return;
+      }
+      if (dominance < 0.6 && !(isSmallCommunity && dominance >= 0.5 && cityCount >= 1)) {
+        return;
+      }
+      if (coverage < 0.1 && !isSmallCommunity) {
+        return;
+      }
+
+      if (!accumulator.has(normalizedCommunity)) {
+        accumulator.set(normalizedCommunity, []);
+      }
+
+      const display = typeof entry.display === 'string' && entry.display.trim()
+        ? entry.display.trim()
+        : streetKey;
+
+      accumulator.get(normalizedCommunity).push({
+        key: streetKey,
+        display,
+        cityCount,
+        totalCityCount,
+        outsideCityCount: Math.max(0, totalCityCount - cityCount),
+        rarityWeight: Number(entry.rarityWeight || 0),
+        communitySize
+      });
     });
   });
 
   accumulator.forEach((streets, communityId) => {
     if (!streets || streets.length === 0) return;
-    const communitySize = communitySizes.get(communityId) || 0;
     const ranked = streets
       .map(street => {
         const cityCount = Number(street.cityCount || 0);
+        const totalCityCount = Number(street.totalCityCount || 0);
+        const communitySize = Number(street.communitySize || 0);
+        const outsideCityCount = Math.max(0, Number(street.outsideCityCount || 0));
         const rarityWeight = Number(street.rarityWeight || 0);
-        const rawShare = communitySize > 0 && cityCount > 0 ? cityCount / communitySize : 0;
-        const communityShare = rawShare > 0 ? Math.min(1, Math.max(0, rawShare)) : 0;
-        const frequencyScore = cityCount > 0 ? Math.log1p(cityCount) : 0;
-        const reliabilityWeight = cityCount >= 4 ? 1.25 : cityCount >= 3 ? 1.1 : cityCount >= 2 ? 1 : 0.6;
-        const score = communityShare > 0 ? communityShare * frequencyScore * reliabilityWeight : 0;
+
+        const coverage = communitySize > 0 && cityCount > 0 ? Math.min(1, Math.max(0, cityCount / communitySize)) : 0;
+        const dominance = totalCityCount > 0 && cityCount > 0 ? Math.min(1, Math.max(0, cityCount / totalCityCount)) : 0;
+        const reliabilityWeight = cityCount >= 6
+          ? 1.4
+          : cityCount >= 5
+          ? 1.3
+          : cityCount >= 4
+          ? 1.18
+          : cityCount >= 3
+          ? 1.05
+          : cityCount >= 2
+          ? 0.85
+          : 0.6;
+        const rarityBoost = rarityWeight > 0 ? 1 + Math.log1p(Math.max(0, rarityWeight) / 40) : 1;
+        const dominanceFactor = dominance > 0 ? Math.pow(dominance, 1.5) : 0;
+        const coverageFactor = coverage > 0 ? Math.pow(coverage, 1.1) : 0;
+        const outsidePenalty = outsideCityCount > 0 ? 1 / (1 + outsideCityCount / Math.max(1, cityCount)) : 1;
+        const score = coverageFactor * dominanceFactor * reliabilityWeight * rarityBoost * outsidePenalty;
         return {
           ...street,
           cityCount,
-          rarityWeight,
+          totalCityCount,
           communitySize,
-          communityShare,
+          outsideCityCount,
+          rarityWeight,
+          coverage,
+          dominance,
           score
         };
       })
+      .filter(item => item.score > 0)
       .sort((a, b) => {
         const scoreDiff = (b.score || 0) - (a.score || 0);
         if (Math.abs(scoreDiff) > 1e-6) return scoreDiff;
-        const shareDiff = (b.communityShare || 0) - (a.communityShare || 0);
-        if (Math.abs(shareDiff) > 1e-6) return shareDiff;
+        const coverageDiff = (b.coverage || 0) - (a.coverage || 0);
+        if (Math.abs(coverageDiff) > 1e-6) return coverageDiff;
+        const dominanceDiff = (b.dominance || 0) - (a.dominance || 0);
+        if (Math.abs(dominanceDiff) > 1e-6) return dominanceDiff;
         const countDiff = (b.cityCount || 0) - (a.cityCount || 0);
         if (countDiff !== 0) return countDiff;
         const rarityDiff = (b.rarityWeight || 0) - (a.rarityWeight || 0);
@@ -1397,7 +1434,7 @@ function updateCommunityStreetSignatures() {
         return HEBREW_COLLATOR.compare(a.display || '', b.display || '');
       });
     const trimmed = ranked
-      .map(({ score, ...rest }) => rest)
+      .map(({ score, coverage, dominance, totalCityCount, outsideCityCount, ...rest }) => rest)
       .slice(0, 60);
     summaryMap.set(communityId, {
       communityId,
@@ -2226,7 +2263,7 @@ function renderGraphCommunityLegend({ nodes = [], communityScale } = {}) {
 
   const headerHtml = '<h3>רחובות מזהים לפי קהילה</h3>';
   const noteHtml =
-    '<p class="legend-note">הרחובות ברשימה מופיעים רק בערים מתוך אותה קהילה ומייצגים חתימה ייחודית שלה.</p>';
+    '<p class="legend-note">הרחובות ברשימה שכיחים במיוחד בערים של אותה קהילה ונפוצים בה יותר מאשר בקהילות אחרות.</p>';
 
   const communities = Array.isArray(nodes)
     ? Array.from(
