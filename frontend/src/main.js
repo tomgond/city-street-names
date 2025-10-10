@@ -56,6 +56,7 @@ const state = {
     total: 0
   },
   graphNodeScoreCache: new Map(),
+  communityStreetSignatures: new Map(),
   cityView: {
     autoDefaultUsed: false,
     primaryId: '',
@@ -91,6 +92,8 @@ const HEBREW_COLLATOR = new Intl.Collator('he', {
   numeric: true
 });
 
+const NUMBER_FORMAT = new Intl.NumberFormat('he-IL');
+
 const STREET_DIRECTORY_BATCH_SIZE = 150;
 
 const elements = {
@@ -109,7 +112,8 @@ const elements = {
     metricSelect: document.getElementById('graph-metric-select'),
     focusInput: document.getElementById('graph-focus-city'),
     focusSuggestions: document.getElementById('graph-focus-suggestions'),
-    focusClear: document.getElementById('graph-focus-clear')
+    focusClear: document.getElementById('graph-focus-clear'),
+    communityLegend: document.getElementById('graph-community-legend')
   },
   dedications: {
     summary: document.getElementById('city-chain-summary'),
@@ -142,6 +146,25 @@ let resizeTimer = null;
 
 function makeEdgeKey(source, target) {
   return `${source}__${target}`;
+}
+
+function escapeHtml(value) {
+  return String(value ?? '').replace(/[&<>"']/g, char => {
+    switch (char) {
+      case '&':
+        return '&amp;';
+      case '<':
+        return '&lt;';
+      case '>':
+        return '&gt;';
+      case '"':
+        return '&quot;';
+      case "'":
+        return '&#39;';
+      default:
+        return char;
+    }
+  });
 }
 
 function toggleLoading(show, message = 'טוען נתונים...') {
@@ -767,6 +790,7 @@ async function loadData() {
         });
       }
     });
+    updateCommunityStreetSignatures();
     state.rarityWeights = rarity || {};
     state.cityHonors = prepareCityHonorGraph(honorGraph);
     state.cityFuse = state.cities.length
@@ -1258,6 +1282,113 @@ function updateGraphCommunityStats() {
   };
 }
 
+function updateCommunityStreetSignatures() {
+  const summaryMap = new Map();
+  if (!state.streetIndex || state.streetIndex.size === 0) {
+    state.communityStreetSignatures = summaryMap;
+    return;
+  }
+
+  const cityCommunity = new Map();
+  state.cities.forEach(city => {
+    if (!city) return;
+    const id = String(city.id || '');
+    if (!id) return;
+    const community = typeof city.community === 'number' && Number.isFinite(city.community)
+      ? city.community
+      : null;
+    if (community === null) return;
+    cityCommunity.set(id, community);
+  });
+
+  if (cityCommunity.size === 0) {
+    state.communityStreetSignatures = summaryMap;
+    return;
+  }
+
+  const accumulator = new Map();
+
+  state.streetIndex.forEach((entry, streetKey) => {
+    if (!entry) return;
+    const cityEntries = Array.isArray(entry.cities) ? entry.cities : [];
+    if (!cityEntries.length) return;
+
+    let communityId = null;
+    let valid = true;
+    let cityCount = 0;
+    const seenCities = new Set();
+
+    for (const cityEntry of cityEntries) {
+      if (!cityEntry) continue;
+      const cityId = String(cityEntry.id ?? cityEntry.city ?? '');
+      if (!cityId || seenCities.has(cityId)) continue;
+      seenCities.add(cityId);
+      if (!cityCommunity.has(cityId)) {
+        valid = false;
+        break;
+      }
+      const assigned = cityCommunity.get(cityId);
+      if (communityId === null) {
+        communityId = assigned;
+      } else if (communityId !== assigned) {
+        valid = false;
+        break;
+      }
+      cityCount += 1;
+    }
+
+    if (!valid || communityId === null || cityCount === 0) {
+      return;
+    }
+
+    if (cityCount < 2) {
+      return;
+    }
+
+    const normalizedCommunity = Number(communityId);
+    if (!Number.isFinite(normalizedCommunity)) {
+      return;
+    }
+
+    if (!accumulator.has(normalizedCommunity)) {
+      accumulator.set(normalizedCommunity, []);
+    }
+
+    const display = typeof entry.display === 'string' && entry.display.trim()
+      ? entry.display.trim()
+      : streetKey;
+
+    accumulator.get(normalizedCommunity).push({
+      key: streetKey,
+      display,
+      cityCount,
+      rarityWeight: Number(entry.rarityWeight || 0),
+      cityIds: Array.from(seenCities)
+    });
+  });
+
+  accumulator.forEach((streets, communityId) => {
+    if (!streets || streets.length === 0) return;
+    const sorted = streets
+      .slice()
+      .sort((a, b) => {
+        const countDiff = (b.cityCount || 0) - (a.cityCount || 0);
+        if (countDiff !== 0) return countDiff;
+        const rarityDiff = (b.rarityWeight || 0) - (a.rarityWeight || 0);
+        if (Math.abs(rarityDiff) > 1e-6) return rarityDiff;
+        return HEBREW_COLLATOR.compare(a.display || '', b.display || '');
+      });
+    const trimmed = sorted.slice(0, 60);
+    summaryMap.set(communityId, {
+      communityId,
+      total: sorted.length,
+      streets: trimmed
+    });
+  });
+
+  state.communityStreetSignatures = summaryMap;
+}
+
 function computeGraphFocusNeighborhood(cityId, depth = 2) {
   const normalized = String(cityId || '');
   if (!normalized || !state.cityMap.has(normalized)) {
@@ -1662,6 +1793,7 @@ function renderNetworkGraph(target, options = {}) {
       ? 'לא נמצאו ערים במרחק של עד שתי קפיצות מהעיר שנבחרה.'
       : 'לא נמצאו ערים להצגה.';
     container.innerHTML = `<p class="empty-state">${message}</p>`;
+    renderGraphCommunityLegend({ nodes: [], communityScale: null });
     return;
   }
 
@@ -2056,6 +2188,8 @@ function renderNetworkGraph(target, options = {}) {
   simulation.on('tick', updatePositions);
   simulation.on('end', snapshotLayout);
 
+  renderGraphCommunityLegend({ nodes, communityScale });
+
   console.info('[viz] renderNetworkGraph end', {
     nodes: nodes.length,
     links: trimmedLinks.length,
@@ -2064,6 +2198,138 @@ function renderNetworkGraph(target, options = {}) {
     metric: metricKey,
     focusCityId: focusId || null
   });
+}
+
+function renderGraphCommunityLegend({ nodes = [], communityScale } = {}) {
+  const container = elements.graph.communityLegend;
+  if (!container) return;
+
+  const headerHtml = '<h3>רחובות מזהים לפי קהילה</h3>';
+  const noteHtml =
+    '<p class="legend-note">הרחובות ברשימה מופיעים בשתי ערים או יותר מתוך אותה קהילה ומייצגים חתימה שמחברת בין הערים שמוצגות בגרף.</p>';
+
+  const communities = Array.isArray(nodes)
+    ? Array.from(
+        new Set(
+          nodes
+            .map(node =>
+              typeof node.community === 'number' && Number.isFinite(node.community) ? node.community : null
+            )
+            .filter(value => value !== null)
+        )
+      ).sort((a, b) => a - b)
+    : [];
+
+  if (!communityScale || typeof communityScale !== 'function' || communities.length === 0) {
+    container.innerHTML =
+      headerHtml +
+      noteHtml +
+      '<p class="legend-community-empty">לא נמצאו קהילות עם צבעים מזוהים לגרף הנוכחי.</p>';
+    container.hidden = false;
+    return;
+  }
+
+  const statsMap = state.graphCommunities && state.graphCommunities.map instanceof Map
+    ? state.graphCommunities.map
+    : null;
+
+  const nodeCityIds = new Set(
+    Array.isArray(nodes)
+      ? nodes
+          .map(node => (node && node.id !== undefined && node.id !== null ? String(node.id) : ''))
+          .filter(id => id)
+      : []
+  );
+
+  const blocks = communities
+    .map(communityId => {
+      const signature = state.communityStreetSignatures.get(communityId) || { streets: [], total: 0 };
+      const availableStreets = Array.isArray(signature.streets) ? signature.streets : [];
+      const connectingStreets = availableStreets
+        .map(street => {
+          if (!street) return null;
+          const allCityIds = Array.isArray(street.cityIds)
+            ? street.cityIds.map(id => (id !== undefined && id !== null ? String(id) : '')).filter(id => id)
+            : [];
+          const matchedIds = allCityIds.filter(id => nodeCityIds.has(id));
+          const matchedCount = matchedIds.length;
+          const totalCityCount = typeof street.cityCount === 'number' ? street.cityCount : allCityIds.length;
+          return {
+            ...street,
+            matchedIds,
+            matchedCount,
+            totalCityCount
+          };
+        })
+        .filter(street => street && street.matchedCount >= 2);
+
+      const totalUnique = connectingStreets.length;
+      const topStreets = connectingStreets.slice(0, 20);
+      const statsKey = `c${communityId}`;
+      const statsEntry = statsMap ? statsMap.get(statsKey) : null;
+      const totalCities = statsEntry && typeof statsEntry.size === 'number'
+        ? statsEntry.size
+        : nodes.filter(node => node.community === communityId).length;
+      const metaParts = [];
+      if (totalCities > 0) {
+        metaParts.push(`${NUMBER_FORMAT.format(totalCities)} ערים`);
+      }
+      if (totalUnique > 0) {
+        const uniqueLabel = totalUnique > 20
+          ? `מתוך ${NUMBER_FORMAT.format(totalUnique)} רחובות ייחודיים`
+          : `${NUMBER_FORMAT.format(totalUnique)} רחובות ייחודיים`;
+        metaParts.push(uniqueLabel);
+      } else {
+        metaParts.push('אין רחובות ייחודיים');
+      }
+      const metaHtml = metaParts.length
+        ? `<span class="legend-community-meta">${metaParts.join(' · ')}</span>`
+        : '';
+
+      const listHtml = topStreets.length
+        ? `<ol class="legend-street-list">${topStreets
+            .map(street => {
+              const name = escapeHtml(street.display || street.key || '');
+              const relevantCount = street.matchedCount || street.totalCityCount || 0;
+              const countLabel = relevantCount > 1
+                ? `${NUMBER_FORMAT.format(relevantCount)} ערים`
+                : 'עיר אחת';
+              return `<li><span class="legend-street-name">${name}</span><span class="legend-street-count">${countLabel}</span></li>`;
+            })
+            .join('')}</ol>`
+        : '<p class="legend-community-empty">לא נמצאו רחובות ייחודיים לקהילה זו.</p>';
+
+      const color = communityScale(communityId);
+      const colorStyle = typeof color === 'string' && color.trim() ? color : '#6b7280';
+      const indexLabel = NUMBER_FORMAT.format(communityId + 1);
+
+      return `
+        <section class="legend-community">
+          <div class="legend-community-header">
+            <span class="legend-community-title">
+              <span class="legend-community-dot" style="background:${colorStyle}"></span>
+              קהילה ${indexLabel}
+            </span>
+            ${metaHtml}
+          </div>
+          ${listHtml}
+        </section>
+      `;
+    })
+    .join('');
+
+  const trimmedBlocks = blocks.trim();
+  if (!trimmedBlocks) {
+    container.innerHTML =
+      headerHtml +
+      noteHtml +
+      '<p class="legend-community-empty">לא נמצאו רחובות ייחודיים לקהילות המוצגות.</p>';
+    container.hidden = false;
+    return;
+  }
+
+  container.innerHTML = `${headerHtml}${noteHtml}<div class="graph-community-legend-grid">${trimmedBlocks}</div>`;
+  container.hidden = false;
 }
 function renderNetworkPreview(force = false) {
   const container = elements.home.network;
