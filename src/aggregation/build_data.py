@@ -37,6 +37,33 @@ MIN_STREETS_FOR_HONOR_GRAPH = 30
 DEFAULT_TOP_NEIGHBOR_COUNT = int(os.environ.get('CITY_SIMILARITY_TOP_N', '20'))
 DEFAULT_TOP_NEIGHBOR_PERCENTILE = float(os.environ.get('CITY_SIMILARITY_TOP_PERCENTILE', '30'))
 
+# Optional community detection tuning via environment variables
+DEFAULT_COMMUNITY_WEIGHT_MODE = 'inverse_df'
+_community_weight_mode_raw = os.environ.get('COMMUNITY_WEIGHT_MODE', '').strip()
+COMMUNITY_WEIGHT_MODE = (
+    _community_weight_mode_raw.lower()
+    if _community_weight_mode_raw
+    else DEFAULT_COMMUNITY_WEIGHT_MODE
+)
+
+_community_idf_power_raw = os.environ.get('COMMUNITY_IDF_POWER')
+if _community_idf_power_raw is not None:
+    try:
+        COMMUNITY_IDF_POWER = float(_community_idf_power_raw)
+    except ValueError:
+        COMMUNITY_IDF_POWER = 1.0
+else:
+    COMMUNITY_IDF_POWER = 1.2 if COMMUNITY_WEIGHT_MODE == 'inverse_df' else 1.0
+
+_community_min_shared_raw = os.environ.get('COMMUNITY_MIN_SHARED')
+if _community_min_shared_raw is not None:
+    try:
+        COMMUNITY_MIN_SHARED = int(float(_community_min_shared_raw))
+    except ValueError:
+        COMMUNITY_MIN_SHARED = 0
+else:
+    COMMUNITY_MIN_SHARED = 0
+
 # Set up logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -237,9 +264,24 @@ class StreetProcessingPipeline:
             for street in sorted_streets[:top_n]
         ]
 
-    def detect_communities(self, similarity_top, metric='weightedJaccard', min_weight=0.0):
+    def detect_communities(
+        self,
+        similarity_top,
+        metric='weightedJaccard',
+        min_weight=0.0,
+        *,
+        weight_mode='',
+        idf_power=1.0,
+        min_shared=0,
+    ):
         """Detect communities using NetworkX community detection algorithms."""
-        logger.info("Detecting city communities using NetworkX (metric=%s)", metric)
+        logger.info(
+            "Detecting city communities using NetworkX (metric=%s, weight_mode=%s, idf_power=%s, min_shared=%s)",
+            metric,
+            weight_mode or COMMUNITY_WEIGHT_MODE or 'weightedJaccard',
+            idf_power,
+            min_shared,
+        )
         start_time = time.time()
 
         graph = nx.Graph()
@@ -258,6 +300,25 @@ class StreetProcessingPipeline:
         if metric_key == 'weighted_jaccard':
             metric_key = 'weightedJaccard'
 
+        weight_mode_normalized = (weight_mode or '').strip().lower()
+        use_inverse_df = weight_mode_normalized == 'inverse_df'
+        min_shared_threshold = max(0, int(min_shared or 0))
+        try:
+            idf_power_value = float(idf_power)
+        except (TypeError, ValueError):
+            idf_power_value = 1.0
+
+        city_street_sets = {}
+        if use_inverse_df:
+            city_street_sets = {
+                str(city_code): set(streets.keys())
+                for city_code, streets in self.cities_data.items()
+            }
+            street_document_frequency = {
+                norm_key: max(len(cities), 1)
+                for norm_key, cities in self.street_to_cities.items()
+            }
+
         edge_weights = defaultdict(float)
         for source, neighbors in (similarity_top or {}).items():
             source_id = str(source)
@@ -270,7 +331,27 @@ class StreetProcessingPipeline:
                 target_id = str(target_raw)
                 if target_id == source_id:
                     continue
-                weight = float(entry.get(metric_key) or 0.0)
+
+                weight = 0.0
+                if use_inverse_df:
+                    streets_a = city_street_sets.get(source_id)
+                    streets_b = city_street_sets.get(target_id)
+                    if not streets_a or not streets_b:
+                        continue
+                    intersection_keys = streets_a & streets_b
+                    if min_shared_threshold and len(intersection_keys) < min_shared_threshold:
+                        continue
+                    if not intersection_keys:
+                        continue
+                    numerator = 0.0
+                    for norm_key in intersection_keys:
+                        df = street_document_frequency.get(norm_key, 1)
+                        numerator += (1.0 / df) ** idf_power_value
+                    denominator = max(min(len(streets_a), len(streets_b)), 1)
+                    weight = numerator / denominator if denominator else 0.0
+                else:
+                    weight = float(entry.get(metric_key) or 0.0)
+
                 if weight <= min_weight:
                     continue
                 edge_key = tuple(sorted((source_id, target_id)))
@@ -1041,7 +1122,12 @@ def main():
             retained_edge_count,
         )
 
-    pipeline.detect_communities(similarity_top)
+    pipeline.detect_communities(
+        similarity_top,
+        weight_mode=COMMUNITY_WEIGHT_MODE,
+        idf_power=COMMUNITY_IDF_POWER,
+        min_shared=COMMUNITY_MIN_SHARED,
+    )
     pipeline.export_similarity_graph_for_gephi(similarity_top, output_dir)
     pipeline.export_data(output_dir, similarities, similarity_top)
 
