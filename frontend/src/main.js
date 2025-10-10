@@ -2188,7 +2188,7 @@ function renderNetworkGraph(target, options = {}) {
   simulation.on('tick', updatePositions);
   simulation.on('end', snapshotLayout);
 
-  renderGraphCommunityLegend({ nodes, communityScale });
+  renderGraphCommunityLegend({ nodes, communityScale, adjacency });
 
   console.info('[viz] renderNetworkGraph end', {
     nodes: nodes.length,
@@ -2200,7 +2200,7 @@ function renderNetworkGraph(target, options = {}) {
   });
 }
 
-function renderGraphCommunityLegend({ nodes = [], communityScale } = {}) {
+function renderGraphCommunityLegend({ nodes = [], communityScale, adjacency } = {}) {
   const container = elements.graph.communityLegend;
   if (!container) return;
 
@@ -2241,6 +2241,16 @@ function renderGraphCommunityLegend({ nodes = [], communityScale } = {}) {
       : []
   );
 
+  const adjacencyMap = adjacency instanceof Map ? adjacency : null;
+
+  const getNeighbors = id => {
+    if (!adjacencyMap) return null;
+    const key = String(id || '');
+    if (!key) return null;
+    const neighbors = adjacencyMap.get(key);
+    return neighbors instanceof Set ? neighbors : null;
+  };
+
   const blocks = communities
     .map(communityId => {
       const signature = state.communityStreetSignatures.get(communityId) || { streets: [], total: 0 };
@@ -2254,14 +2264,44 @@ function renderGraphCommunityLegend({ nodes = [], communityScale } = {}) {
           const matchedIds = allCityIds.filter(id => nodeCityIds.has(id));
           const matchedCount = matchedIds.length;
           const totalCityCount = typeof street.cityCount === 'number' ? street.cityCount : allCityIds.length;
+
+          let connectedIds = matchedIds;
+          let connectedCount = matchedCount;
+
+          if (adjacencyMap && matchedCount >= 2) {
+            const connectedSet = new Set();
+            for (let i = 0; i < matchedIds.length; i += 1) {
+              const sourceId = matchedIds[i];
+              const neighbors = getNeighbors(sourceId);
+              if (!neighbors || neighbors.size === 0) continue;
+              for (let j = i + 1; j < matchedIds.length; j += 1) {
+                const targetId = matchedIds[j];
+                if (neighbors.has(targetId)) {
+                  connectedSet.add(sourceId);
+                  connectedSet.add(targetId);
+                }
+              }
+            }
+            connectedIds = connectedSet.size ? Array.from(connectedSet) : [];
+            connectedCount = connectedIds.length;
+          }
+
           return {
             ...street,
             matchedIds,
             matchedCount,
-            totalCityCount
+            totalCityCount,
+            connectedIds,
+            connectedCount
           };
         })
-        .filter(street => street && street.matchedCount >= 2);
+        .filter(street => {
+          if (!street) return false;
+          if (adjacencyMap) {
+            return Array.isArray(street.connectedIds) && street.connectedIds.length >= 2;
+          }
+          return street.matchedCount >= 2;
+        });
 
       const totalUnique = connectingStreets.length;
       const topStreets = connectingStreets.slice(0, 20);
@@ -2290,7 +2330,9 @@ function renderGraphCommunityLegend({ nodes = [], communityScale } = {}) {
         ? `<ol class="legend-street-list">${topStreets
             .map(street => {
               const name = escapeHtml(street.display || street.key || '');
-              const relevantCount = street.matchedCount || street.totalCityCount || 0;
+              const relevantCount = adjacencyMap
+                ? street.connectedCount || 0
+                : street.matchedCount || street.totalCityCount || 0;
               const countLabel = relevantCount > 1
                 ? `${NUMBER_FORMAT.format(relevantCount)} ערים`
                 : 'עיר אחת';
