@@ -38,7 +38,10 @@ DEFAULT_TOP_NEIGHBOR_COUNT = int(os.environ.get('CITY_SIMILARITY_TOP_N', '20'))
 DEFAULT_TOP_NEIGHBOR_PERCENTILE = float(os.environ.get('CITY_SIMILARITY_TOP_PERCENTILE', '30'))
 
 # Optional community detection tuning via environment variables
-DEFAULT_COMMUNITY_WEIGHT_MODE = 'inverse_df'
+# Default to the TF-IDF weighted Jaccard edge weights that were validated in
+# the exploration tooling. Alternate modes (like ``inverse_df``) remain
+# opt-in via the ``COMMUNITY_WEIGHT_MODE`` environment variable.
+DEFAULT_COMMUNITY_WEIGHT_MODE = 'weighted_jaccard'
 _community_weight_mode_raw = os.environ.get('COMMUNITY_WEIGHT_MODE', '').strip()
 COMMUNITY_WEIGHT_MODE = (
     _community_weight_mode_raw.lower()
@@ -53,7 +56,7 @@ if _community_idf_power_raw is not None:
     except ValueError:
         COMMUNITY_IDF_POWER = 1.0
 else:
-    COMMUNITY_IDF_POWER = 1.2 if COMMUNITY_WEIGHT_MODE == 'inverse_df' else 1.0
+    COMMUNITY_IDF_POWER = 1.1 if COMMUNITY_WEIGHT_MODE == 'inverse_df' else 1.0
 
 _community_min_shared_raw = os.environ.get('COMMUNITY_MIN_SHARED')
 if _community_min_shared_raw is not None:
