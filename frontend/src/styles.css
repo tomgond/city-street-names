@@ -293,30 +293,48 @@ a:hover {
   font-size: 0.85rem;
 }
 
-.legend-street-list {
-  margin: 0;
-  padding: 0 1rem 0 0;
-  list-style: decimal inside;
-  display: grid;
-  gap: 0.35rem;
-  font-size: 0.92rem;
+.legend-street-table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 0.5rem 0 0;
+  font-size: 0.9rem;
+  background: rgba(255, 255, 255, 0.75);
+  border-radius: 12px;
+  overflow: hidden;
+  box-shadow: 0 10px 22px rgba(208, 168, 128, 0.15);
 }
 
-.legend-street-list li {
-  display: flex;
-  justify-content: space-between;
-  gap: 0.75rem;
-  line-height: 1.35;
+.legend-street-table caption {
+  text-align: start;
+  padding: 0.4rem 0.7rem;
+  font-weight: 600;
+  color: var(--text);
+  background: rgba(248, 224, 194, 0.5);
 }
 
-.legend-street-name {
-  font-weight: 500;
+.legend-street-table thead th {
+  font-weight: 600;
+  color: var(--text);
+  padding: 0.5rem 0.7rem;
+  text-align: start;
+  border-bottom: 1px solid rgba(224, 193, 157, 0.5);
 }
 
-.legend-street-count {
-  color: var(--muted);
-  font-size: 0.85rem;
-  white-space: nowrap;
+.legend-street-table tbody tr:nth-child(even) {
+  background: rgba(248, 236, 220, 0.4);
+}
+
+.legend-street-table tbody th,
+.legend-street-table tbody td {
+  padding: 0.5rem 0.7rem;
+  text-align: start;
+  border-bottom: 1px solid rgba(224, 193, 157, 0.3);
+  color: var(--text);
+}
+
+.legend-street-table tbody tr:last-child th,
+.legend-street-table tbody tr:last-child td {
+  border-bottom: none;
 }
 
 .legend-community-empty {

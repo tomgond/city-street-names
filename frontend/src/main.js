@@ -1289,6 +1289,12 @@ function updateCommunityStreetSignatures() {
     return;
   }
 
+  const totalCityCount = Array.isArray(state.cities) ? state.cities.length : 0;
+  if (!totalCityCount) {
+    state.communityStreetSignatures = summaryMap;
+    return;
+  }
+
   const cityCommunity = new Map();
   state.cities.forEach(city => {
     if (!city) return;
@@ -1313,70 +1319,91 @@ function updateCommunityStreetSignatures() {
     const cityEntries = Array.isArray(entry.cities) ? entry.cities : [];
     if (!cityEntries.length) return;
 
-    let communityId = null;
-    let valid = true;
-    let cityCount = 0;
-    const seenCities = new Set();
+    const communityBuckets = new Map();
 
     for (const cityEntry of cityEntries) {
       if (!cityEntry) continue;
       const cityId = String(cityEntry.id ?? cityEntry.city ?? '');
-      if (!cityId || seenCities.has(cityId)) continue;
-      seenCities.add(cityId);
-      if (!cityCommunity.has(cityId)) {
-        valid = false;
-        break;
-      }
+      if (!cityId || !cityCommunity.has(cityId)) continue;
       const assigned = cityCommunity.get(cityId);
-      if (communityId === null) {
-        communityId = assigned;
-      } else if (communityId !== assigned) {
-        valid = false;
-        break;
+      if (!communityBuckets.has(assigned)) {
+        communityBuckets.set(assigned, new Set());
       }
-      cityCount += 1;
+      communityBuckets.get(assigned).add(cityId);
     }
 
-    if (!valid || communityId === null || cityCount === 0) {
+    const totalCommunityParticipation = communityBuckets.size;
+
+    if (totalCommunityParticipation === 0) {
       return;
-    }
-
-    const normalizedCommunity = Number(communityId);
-    if (!Number.isFinite(normalizedCommunity)) {
-      return;
-    }
-
-    if (!accumulator.has(normalizedCommunity)) {
-      accumulator.set(normalizedCommunity, []);
     }
 
     const display = typeof entry.display === 'string' && entry.display.trim()
       ? entry.display.trim()
       : streetKey;
 
-    accumulator.get(normalizedCommunity).push({
-      key: streetKey,
-      display,
-      cityCount,
-      rarityWeight: Number(entry.rarityWeight || 0)
+    communityBuckets.forEach((citySet, communityId) => {
+      if (!citySet || citySet.size <= 1) return;
+      const normalizedCommunity = Number(communityId);
+      if (!Number.isFinite(normalizedCommunity)) return;
+
+      if (!accumulator.has(normalizedCommunity)) {
+        accumulator.set(normalizedCommunity, []);
+      }
+
+      accumulator.get(normalizedCommunity).push({
+        key: streetKey,
+        display,
+        cityCount: citySet.size,
+        rarityWeight: Number(entry.rarityWeight || 0),
+        globalCityCount: entry.cityCount || 0,
+        communityCount: totalCommunityParticipation
+      });
     });
   });
 
   accumulator.forEach((streets, communityId) => {
     if (!streets || streets.length === 0) return;
-    const sorted = streets
-      .slice()
-      .sort((a, b) => {
-        const countDiff = (b.cityCount || 0) - (a.cityCount || 0);
-        if (countDiff !== 0) return countDiff;
-        const rarityDiff = (b.rarityWeight || 0) - (a.rarityWeight || 0);
-        if (Math.abs(rarityDiff) > 1e-6) return rarityDiff;
-        return HEBREW_COLLATOR.compare(a.display || '', b.display || '');
+
+    const scored = streets
+      .filter(street => (street?.cityCount || 0) > 1 && (street?.globalCityCount || 0) > 0)
+      .map(street => {
+        const tf = street.cityCount || 0;
+        const docFrequency = Math.max(1, street.globalCityCount || 0);
+        const ratio = totalCityCount / docFrequency;
+        const idf = ratio > 1 ? Math.log(ratio) : 0;
+        const baseScore = tf * idf;
+        const communityCount = Number.isFinite(Number(street.communityCount))
+          ? Number(street.communityCount)
+          : 1;
+        const otherCommunities = Math.max(0, communityCount - 1);
+        const penaltyFactor = 1 / (1 + otherCommunities);
+        const score = baseScore * penaltyFactor;
+        return {
+          ...street,
+          score,
+          baseScore,
+          penaltyFactor,
+          otherCommunities
+        };
       });
-    const trimmed = sorted.slice(0, 60);
+
+    if (!scored.length) {
+      return;
+    }
+
+    const sorted = scored.sort((a, b) => {
+      const scoreDiff = (b.score || 0) - (a.score || 0);
+      if (Math.abs(scoreDiff) > 1e-9) return scoreDiff;
+      const rarityDiff = (b.rarityWeight || 0) - (a.rarityWeight || 0);
+      if (Math.abs(rarityDiff) > 1e-6) return rarityDiff;
+      return HEBREW_COLLATOR.compare(a.display || '', b.display || '');
+    });
+
+    const trimmed = sorted.slice(0, 60).map(({ baseScore, penaltyFactor, otherCommunities, ...rest }) => rest);
     summaryMap.set(communityId, {
       communityId,
-      total: sorted.length,
+      total: scored.length,
       streets: trimmed
     });
   });
@@ -2255,15 +2282,28 @@ function renderGraphCommunityLegend({ nodes = [], communityScale } = {}) {
         : '';
 
       const listHtml = topStreets.length
-        ? `<ol class="legend-street-list">${topStreets
-            .map(street => {
-              const name = escapeHtml(street.display || street.key || '');
-              const countLabel = street.cityCount > 1
-                ? `${NUMBER_FORMAT.format(street.cityCount)} ערים`
-                : 'עיר אחת';
-              return `<li><span class="legend-street-name">${name}</span><span class="legend-street-count">${countLabel}</span></li>`;
-            })
-            .join('')}</ol>`
+        ? `
+            <table class="legend-street-table">
+              <caption>רחובות בולטים בקהילה</caption>
+              <thead>
+                <tr>
+                  <th scope="col">רחוב</th>
+                  <th scope="col">מס' ערים בקהילה</th>
+                  <th scope="col">מס' ערים בארץ</th>
+                </tr>
+              </thead>
+              <tbody>
+                ${topStreets
+                  .map(street => {
+                    const name = escapeHtml(street.display || street.key || '');
+                    const localCount = NUMBER_FORMAT.format(Number(street.cityCount || 0));
+                    const globalCount = NUMBER_FORMAT.format(Number(street.globalCityCount || 0));
+                    return `<tr><th scope="row">${name}</th><td>${localCount}</td><td>${globalCount}</td></tr>`;
+                  })
+                  .join('')}
+              </tbody>
+            </table>
+          `
         : '<p class="legend-community-empty">לא נמצאו רחובות ייחודיים לקהילה זו.</p>';
 
       const color = communityScale(communityId);
