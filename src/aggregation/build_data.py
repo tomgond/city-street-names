@@ -71,6 +71,8 @@ logger = logging.getLogger(__name__)
 class StreetProcessingPipeline:
     def __init__(self):
         self.cities_data = defaultdict(dict)
+        self.city_street_counts = defaultdict(Counter)
+        self.city_total_street_counts = defaultdict(int)
         self.city_street_meta = defaultdict(dict)
         self.street_to_cities = defaultdict(set)
         self.norm_keys = {}
@@ -103,6 +105,8 @@ class StreetProcessingPipeline:
                     self.city_names[city_code] = city_name
 
                 self.cities_data[city_code][norm_key] = norm_display
+                self.city_street_counts[city_code][norm_key] += 1
+                self.city_total_street_counts[city_code] += 1
 
                 street_meta = self.city_street_meta[city_code].get(norm_key)
                 if street_meta is None:
@@ -226,18 +230,41 @@ class StreetProcessingPipeline:
 
         return len(intersection) / len(union)
 
-    def calculate_weighted_jaccard_similarity(self, city_a_streets, city_b_streets):
-        """Calculate weighted Jaccard similarity between two cities' street sets."""
-        intersection = city_a_streets & city_b_streets
-        union = city_a_streets | city_b_streets
-
-        if not union:
+    def calculate_weighted_jaccard_similarity(self, city_a_code, city_b_code):
+        """Calculate TF-IDF weighted Jaccard similarity between two cities."""
+        counts_a = self.city_street_counts.get(city_a_code)
+        counts_b = self.city_street_counts.get(city_b_code)
+        if not counts_a or not counts_b:
             return 0.0
 
-        intersection_weight = sum(self.rarity_weights.get(street, 0.0) for street in intersection)
-        union_weight = sum(self.rarity_weights.get(street, 0.0) for street in union)
+        total_a = self.city_total_street_counts.get(city_a_code, 0)
+        total_b = self.city_total_street_counts.get(city_b_code, 0)
+        if total_a <= 0 or total_b <= 0:
+            return 0.0
 
-        return intersection_weight / union_weight if union_weight > 0 else 0.0
+        union_keys = set(counts_a.keys()) | set(counts_b.keys())
+        if not union_keys:
+            return 0.0
+
+        numerator = 0.0
+        denominator = 0.0
+
+        for norm_key in union_keys:
+            rarity_weight = self.rarity_weights.get(norm_key, 0.0)
+            if rarity_weight <= 0.0:
+                # Keys without rarity weight do not affect the score.
+                continue
+
+            tf_a = counts_a.get(norm_key, 0) / total_a
+            tf_b = counts_b.get(norm_key, 0) / total_b
+
+            weighted_a = tf_a * rarity_weight
+            weighted_b = tf_b * rarity_weight
+
+            numerator += min(weighted_a, weighted_b)
+            denominator += max(weighted_a, weighted_b)
+
+        return numerator / denominator if denominator > 0 else 0.0
 
     def get_top_shared_streets(
         self,
@@ -835,7 +862,7 @@ class StreetProcessingPipeline:
                 union = city_a_streets | city_b_streets
 
                 jaccard = self.calculate_jaccard_similarity(city_a_streets, city_b_streets)
-                weighted_jaccard = self.calculate_weighted_jaccard_similarity(city_a_streets, city_b_streets)
+                weighted_jaccard = self.calculate_weighted_jaccard_similarity(city_a, city_b)
                 top_streets = self.get_top_shared_streets(
                     city_a_streets,
                     city_b_streets,
@@ -1092,6 +1119,7 @@ def main():
     retained_edge_count = 0
     percentile_thresholds = []
     for city_code, sims in top_similarities.items():
+        # Prioritize neighbors by the TF-IDF weighted Jaccard score.
         sims.sort(key=lambda item: item['weightedJaccard'], reverse=True)
 
         keep_count = len(sims)
