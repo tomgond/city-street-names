@@ -136,10 +136,211 @@ def build_similarity_top(
     return similarity_top, stats
 
 
+def filter_city_street_sets(
+    city_street_sets: Dict[int, Set[str]],
+    rarity_weights: Dict[str, float],
+    street_df: Dict[str, int],
+    *,
+    max_df_fraction: float,
+    top_k_rare: int,
+) -> Tuple[Dict[int, Set[str]], dict]:
+    """
+    Optional pre-filtering to drop overly common streets and retain only the rarest
+    streets per city prior to similarity computation. Returns the filtered mapping
+    and aggregate stats about how many entries were removed.
+    """
+    total_cities = max(len(city_street_sets), 1)
+    filtered_sets: Dict[int, Set[str]] = {}
+
+    threshold_fraction = max(0.0, min(max_df_fraction, 1.0))
+    max_allowed_df = None
+    if threshold_fraction > 0.0:
+        max_allowed_df = threshold_fraction * total_cities
+
+    removed_common = 0
+    removed_topk = 0
+    original_memberships = 0
+    retained_memberships = 0
+
+    for city_code, streets in city_street_sets.items():
+        original_memberships += len(streets)
+        filtered = set(streets)
+
+        if max_allowed_df is not None:
+            before = len(filtered)
+            filtered = {
+                key
+                for key in filtered
+                if street_df.get(key, 0) <= max_allowed_df
+            }
+            removed_common += max(0, before - len(filtered))
+
+        if top_k_rare > 0 and len(filtered) > top_k_rare:
+            ranked = sorted(
+                filtered,
+                key=lambda key: (
+                    rarity_weights.get(key, 0.0),
+                    -street_df.get(key, 0),
+                    key,
+                ),
+                reverse=True,
+            )
+            keep = set(ranked[:top_k_rare])
+            removed_topk += len(filtered) - len(keep)
+            filtered = keep
+
+        filtered_sets[city_code] = filtered
+        retained_memberships += len(filtered)
+
+    stats = {
+        'total_cities': len(city_street_sets),
+        'original_memberships': original_memberships,
+        'retained_memberships': retained_memberships,
+        'dropped_common': removed_common,
+        'dropped_topk': removed_topk,
+        'max_df_fraction': threshold_fraction,
+        'top_k_rare': top_k_rare,
+    }
+    return filtered_sets, stats
+
+
+def run_bruteforce_scan(
+    pipeline: StreetProcessingPipeline,
+    similarity_top: Dict[str, List[dict]],
+    focus_city_codes: Sequence[int],
+) -> None:
+    """
+    Explore a predefined grid of parameter combinations for edge weighting and community detection.
+    Only logs aggregated stats (no console prints).
+    """
+    focus_city_set = set(focus_city_codes)
+    raw_city_street_sets: Dict[int, Set[str]] = {
+        int(code): set(streets.keys()) for code, streets in pipeline.cities_data.items()
+    }
+    street_df = {key: len(cities) for key, cities in pipeline.street_to_cities.items()}
+
+    weight_modes = ['weighted_jaccard', 'inverse_df', 'tfidf_cosine', 'binary_cosine']
+    min_weights = [0.0, 0.005, 0.01]
+    min_shared_options = [0, 3, 5]
+    resolutions = [1.2, 1.6, 2.0, 2.4]
+    top_k_options = [0, 20]
+    max_df_options = [0.0, 0.2, 0.35]
+    idf_power_map = {
+        'inverse_df': [1.0, 1.4, 1.8],
+    }
+
+    for max_df_fraction in max_df_options:
+        for top_k in top_k_options:
+            filtered_sets, filter_stats = filter_city_street_sets(
+                raw_city_street_sets,
+                pipeline.rarity_weights,
+                street_df,
+                max_df_fraction=max_df_fraction,
+                top_k_rare=top_k,
+            )
+            city_count = len(filtered_sets)
+            retained = filter_stats['retained_memberships']
+            original = max(filter_stats['original_memberships'], 1)
+            logger.info(
+                "SCAN filter max_df=%.2f top_k=%d -> cities=%d memberships=%d/ %d (%.1f%%)",
+                max_df_fraction,
+                top_k,
+                city_count,
+                retained,
+                original,
+                100.0 * retained / original,
+            )
+            if not filtered_sets:
+                logger.info("SCAN skipped (no cities after filtering)")
+                continue
+
+            city_rarity_sums = {
+                city_code: sum(pipeline.rarity_weights.get(street, 0.0) for street in streets)
+                for city_code, streets in filtered_sets.items()
+            }
+            city_sizes = {city_code: len(streets) for city_code, streets in filtered_sets.items()}
+            if not city_sizes:
+                logger.info("SCAN skipped (no street memberships after filtering)")
+                continue
+            size_reference = statistics.median(city_sizes.values())
+            average_city_size = statistics.mean(city_sizes.values())
+            max_rarity_weight = max(pipeline.rarity_weights.values()) if pipeline.rarity_weights else 1.0
+
+            for weight_mode in weight_modes:
+                idf_candidates = idf_power_map.get(weight_mode, [1.0])
+                for idf_power in idf_candidates:
+                    for min_shared in min_shared_options:
+                        for min_weight in min_weights:
+                            graph = build_graph(
+                                pipeline.city_names,
+                                similarity_top,
+                                filtered_sets,
+                                pipeline.rarity_weights,
+                                city_rarity_sums,
+                                city_sizes,
+                                pipeline.city_uniqueness,
+                                focus_cities=focus_city_set,
+                                street_df=street_df,
+                                weight_mode=weight_mode,
+                                rarity_power=1.75,
+                                weight_exponent=1.0,
+                                uniqueness_gamma=0.0,
+                                size_gamma=0.0,
+                                size_reference=size_reference,
+                                min_shared=min_shared,
+                                metric_key='weightedJaccard',
+                                min_weight=min_weight,
+                                max_rarity=max_rarity_weight,
+                                focus_penalty=1.0,
+                                idf_power=idf_power,
+                                total_cities=city_count,
+                                average_city_size=average_city_size,
+                                bm25_k1=1.2,
+                                bm25_b=0.75,
+                            )
+                            if graph.number_of_edges() == 0:
+                                logger.info(
+                                    "SCAN weight=%s idf=%.2f min_w=%.3f min_shared=%d -> graph has no edges",
+                                    weight_mode,
+                                    idf_power,
+                                    min_weight,
+                                    min_shared,
+                                )
+                                continue
+                            for resolution in resolutions:
+                                communities = run_louvain(graph, resolution=resolution, seed=42)
+                                summary = summarize_partition(
+                                    communities,
+                                    pipeline.city_names,
+                                    focus_city_codes,
+                                    sample_limit=0,
+                                    community_limit=5,
+                                )
+                                focus_counts = [
+                                    len(set(members) & focus_city_set) for members in communities
+                                ]
+                                focus_repr = ", ".join(
+                                    f"C{i}={count}" for i, count in enumerate(focus_counts) if count > 0
+                                )
+                                logger.info(
+                                    "SCAN mode=%s idf=%.2f min_w=%.3f min_shared=%d res=%.2f top_k=%d max_df=%.2f -> %d communities, largest=%s, focus_hits: %s",
+                                    weight_mode,
+                                    idf_power,
+                                    min_weight,
+                                    min_shared,
+                                    resolution,
+                                    top_k,
+                                    max_df_fraction,
+                                    summary['community_count'],
+                                    summary['largest_sizes'],
+                                    focus_repr or 'none',
+                                )
+
+
 def build_graph(
     city_names: Dict[int, str],
     similarity_top: Dict[str, List[dict]],
-    city_street_sets: Dict[int, set],
+    city_street_sets: Dict[int, Set[str]],
     rarity_weights: Dict[str, float],
     city_rarity_sums: Dict[int, float],
     city_sizes: Dict[int, int],
@@ -159,6 +360,10 @@ def build_graph(
     max_rarity: float,
     focus_penalty: float,
     idf_power: float,
+    total_cities: int,
+    average_city_size: float,
+    bm25_k1: float,
+    bm25_b: float,
 ) -> nx.Graph:
     """
     Create an undirected NetworkX graph from the similarity_top payload, while allowing custom edge weights.
@@ -170,6 +375,67 @@ def build_graph(
     valid_metrics = {'weightedJaccard', 'jaccard'}
     default_metric = metric_key if metric_key in valid_metrics else 'weightedJaccard'
     epsilon = 1e-6
+    total_cities = max(total_cities, 1)
+    average_city_size = max(average_city_size, epsilon)
+    bm25_k1 = max(bm25_k1, epsilon)
+    bm25_b = min(max(bm25_b, 0.0), 1.0)
+
+    tfidf_idf_cache: Dict[str, float] = {}
+    tfidf_norm_cache: Dict[int, float] = {}
+    bm25_idf_cache: Dict[str, float] = {}
+    bm25_norm_cache: Dict[int, float] = {}
+    bm25_factor_cache: Dict[int, float] = {}
+
+    def tfidf_idf(key: str) -> float:
+        value = tfidf_idf_cache.get(key)
+        if value is not None:
+            return value
+        df = max(street_df.get(key, 0), 1)
+        value = math.log1p(total_cities / df)
+        tfidf_idf_cache[key] = value
+        return value
+
+    def tfidf_norm(city: int) -> float:
+        value = tfidf_norm_cache.get(city)
+        if value is not None:
+            return value
+        weights = city_street_sets.get(city, set())
+        norm_sq = sum(tfidf_idf(key) ** 2 for key in weights)
+        value = math.sqrt(norm_sq) if norm_sq > 0 else 0.0
+        tfidf_norm_cache[city] = value
+        return value
+
+    def bm25_idf(key: str) -> float:
+        value = bm25_idf_cache.get(key)
+        if value is not None:
+            return value
+        df = street_df.get(key, 0)
+        numerator = max(total_cities - df + 0.5, epsilon)
+        denominator = max(df + 0.5, epsilon)
+        value = math.log((numerator / denominator) + 1.0)
+        bm25_idf_cache[key] = value
+        return value
+
+    def bm25_factor(city: int) -> float:
+        value = bm25_factor_cache.get(city)
+        if value is not None:
+            return value
+        length = len(city_street_sets.get(city, set()))
+        denom = 1.0 + bm25_k1 * (1.0 - bm25_b + bm25_b * (length / average_city_size))
+        value = (bm25_k1 + 1.0) / denom if denom > 0 else 0.0
+        bm25_factor_cache[city] = value
+        return value
+
+    def bm25_norm(city: int) -> float:
+        value = bm25_norm_cache.get(city)
+        if value is not None:
+            return value
+        factor = bm25_factor(city)
+        weights = city_street_sets.get(city, set())
+        norm_sq = sum((bm25_idf(key) * factor) ** 2 for key in weights)
+        value = math.sqrt(norm_sq) if norm_sq > 0 else 0.0
+        bm25_norm_cache[city] = value
+        return value
 
     def compute_similarity(city_a: int, city_b: int, fallback_entry: dict) -> float:
         streets_a = city_street_sets.get(city_a)
@@ -238,6 +504,43 @@ def build_graph(
                 numerator += (1.0 / df) ** idf_power
             denom = max(min(len(streets_a), len(streets_b)), 1)
             return numerator / denom
+
+        if weight_mode == 'binary_cosine':
+            denom = math.sqrt(len(streets_a) * len(streets_b))
+            return len(intersection_keys) / denom if denom > 0 else 0.0
+
+        if weight_mode == 'dice':
+            denom = len(streets_a) + len(streets_b)
+            return (2.0 * len(intersection_keys)) / denom if denom > 0 else 0.0
+
+        if weight_mode == 'overlap':
+            denom = min(len(streets_a), len(streets_b))
+            return len(intersection_keys) / denom if denom > 0 else 0.0
+
+        if weight_mode == 'tfidf_cosine':
+            if not intersection_keys:
+                return 0.0
+            norm_a = tfidf_norm(city_a)
+            norm_b = tfidf_norm(city_b)
+            if norm_a <= 0.0 or norm_b <= 0.0:
+                return 0.0
+            numerator = sum(tfidf_idf(key) ** 2 for key in intersection_keys)
+            return numerator / (norm_a * norm_b)
+
+        if weight_mode == 'bm25_cosine':
+            if not intersection_keys:
+                return 0.0
+            norm_a = bm25_norm(city_a)
+            norm_b = bm25_norm(city_b)
+            if norm_a <= 0.0 or norm_b <= 0.0:
+                return 0.0
+            factor_a = bm25_factor(city_a)
+            factor_b = bm25_factor(city_b)
+            numerator = sum(
+                (bm25_idf(key) * factor_a) * (bm25_idf(key) * factor_b) for key in intersection_keys
+            )
+            denom = norm_a * norm_b
+            return numerator / denom if denom > 0 else 0.0
 
         return float(fallback_entry.get(default_metric) or 0.0)
 
@@ -526,9 +829,22 @@ def main() -> None:
             'rarity_cosine',
             'rarity_ratio',
             'inverse_df',
+            'binary_cosine',
+            'dice',
+            'overlap',
+            'tfidf_cosine',
+            'bm25_cosine',
         ],
-        default='weighted_jaccard',
-        help='How to derive edge weights before thresholding (applied symmetrically).',
+        nargs='+',
+        default=[
+            'weighted_jaccard',
+            'inverse_df',
+            'binary_cosine',
+            'dice',
+            'overlap',
+            'tfidf_cosine',
+        ],
+        help='One or more similarity strategies to evaluate when building the experiment graph.',
     )
     parser.add_argument(
         '--rarity-power',
@@ -566,6 +882,35 @@ def main() -> None:
         default=0,
         help='Drop edges where the intersection size is below this value after re-weighting.',
     )
+    parser.add_argument(
+        '--top-k-rare',
+        type=int,
+        default=0,
+        help='If >0, keep only the K highest-rarity streets per city before computing similarities.',
+    )
+    parser.add_argument(
+        '--max-df-fraction',
+        type=float,
+        default=0.0,
+        help='If >0, drop streets that appear in more than this fraction of cities (pre-filter for ubiquitous names).',
+    )
+    parser.add_argument(
+        '--bm25-k1',
+        type=float,
+        default=1.2,
+        help='k1 term for BM25 weighting when weight-mode=bm25_cosine.',
+    )
+    parser.add_argument(
+        '--bm25-b',
+        type=float,
+        default=0.75,
+        help='b term for BM25 weighting when weight-mode=bm25_cosine.',
+    )
+    parser.add_argument(
+        '--bruteforce-scan',
+        action='store_true',
+        help='Run a predefined scan over edge-weight parameters and exit (suppresses console summaries).',
+    )
     args = parser.parse_args()
 
     logging.basicConfig(
@@ -592,10 +937,32 @@ def main() -> None:
     focus_labels = [pipeline.city_names.get(code, str(code)) for code in focus_city_codes]
     logger.info("Tracking %d largest cities: %s", args.focus_top, ", ".join(focus_labels))
 
-    experiments: List[Tuple[str, float, float, List[List[int]]]] = []
-    city_street_sets = {
+    if args.bruteforce_scan:
+        run_bruteforce_scan(pipeline, similarity_top, focus_city_codes)
+        return
+
+    experiments: List[Tuple[str, str, float, float, List[List[int]]]] = []
+    street_df = {key: len(cities) for key, cities in pipeline.street_to_cities.items()}
+    raw_city_street_sets: Dict[int, Set[str]] = {
         int(code): set(streets.keys()) for code, streets in pipeline.cities_data.items()
     }
+    city_street_sets, filter_stats = filter_city_street_sets(
+        raw_city_street_sets,
+        pipeline.rarity_weights,
+        street_df,
+        max_df_fraction=args.max_df_fraction,
+        top_k_rare=max(0, args.top_k_rare),
+    )
+    logger.info(
+        "Street filter -> kept %d/%d memberships (%.1f%%), dropped_common=%d, dropped_topk=%d",
+        filter_stats['retained_memberships'],
+        max(filter_stats['original_memberships'], 1),
+        100.0
+        * filter_stats['retained_memberships']
+        / max(filter_stats['original_memberships'], 1),
+        filter_stats['dropped_common'],
+        filter_stats['dropped_topk'],
+    )
     city_rarity_sums = {
         city_code: sum(pipeline.rarity_weights.get(street, 0.0) for street in streets)
         for city_code, streets in city_street_sets.items()
@@ -604,51 +971,90 @@ def main() -> None:
     uniqueness_metrics = pipeline.city_uniqueness
     max_rarity_weight = max(pipeline.rarity_weights.values()) if pipeline.rarity_weights else 1.0
     size_reference = statistics.median(city_sizes.values()) if city_sizes else 1.0
-    street_df = {key: len(cities) for key, cities in pipeline.street_to_cities.items()}
-    for min_weight in args.min_weight:
-        graph = build_graph(
-            pipeline.city_names,
-            similarity_top,
-            city_street_sets,
-            pipeline.rarity_weights,
-            city_rarity_sums,
-            city_sizes,
-            uniqueness_metrics,
-            focus_cities=focus_city_set,
-            street_df=street_df,
-            weight_mode=args.weight_mode,
-            rarity_power=args.rarity_power,
-            weight_exponent=args.weight_exponent,
-            uniqueness_gamma=args.uniqueness_gamma,
-            size_gamma=args.size_gamma,
-            size_reference=size_reference,
-            min_shared=args.min_shared,
-            metric_key=args.metric,
-            min_weight=min_weight,
-            max_rarity=max_rarity_weight,
-            focus_penalty=args.focus_penalty,
-            idf_power=args.idf_power,
-        )
-        logger.info(
-            "Graph built with min_weight %.3f → %d nodes, %d edges",
-            min_weight,
-            graph.number_of_nodes(),
-            graph.number_of_edges(),
-        )
+    avg_city_size = statistics.mean(city_sizes.values()) if city_sizes else 1.0
+    total_city_count = len(city_street_sets)
 
-        for resolution in args.resolution:
-            communities = run_louvain(graph, resolution=resolution, seed=args.seed)
-            experiments.append((f"louvain(res={resolution:.2f}, min_w={min_weight:.3f})", min_weight, resolution, communities))
 
-        if args.greedy:
-            communities = run_greedy(graph)
-            experiments.append((f"greedy(min_w={min_weight:.3f})", min_weight, math.nan, communities))
+    weight_modes: List[str] = []
+    for mode in args.weight_mode:
+        if mode not in weight_modes:
+            weight_modes.append(mode)
 
-        if args.label_propagation:
-            communities = run_label_propagation(graph, seed=args.seed)
-            experiments.append((f"label_propagation(min_w={min_weight:.3f})", min_weight, math.nan, communities))
+    for weight_mode in weight_modes:
+        logger.info("=== Evaluating weight mode: %s ===", weight_mode)
+        for min_weight in args.min_weight:
+            graph = build_graph(
+                pipeline.city_names,
+                similarity_top,
+                city_street_sets,
+                pipeline.rarity_weights,
+                city_rarity_sums,
+                city_sizes,
+                uniqueness_metrics,
+                focus_cities=focus_city_set,
+                street_df=street_df,
+                weight_mode=weight_mode,
+                rarity_power=args.rarity_power,
+                weight_exponent=args.weight_exponent,
+                uniqueness_gamma=args.uniqueness_gamma,
+                size_gamma=args.size_gamma,
+                size_reference=size_reference,
+                min_shared=args.min_shared,
+                metric_key=args.metric,
+                min_weight=min_weight,
+                max_rarity=max_rarity_weight,
+                focus_penalty=args.focus_penalty,
+                idf_power=args.idf_power,
+                total_cities=total_city_count,
+                average_city_size=avg_city_size,
+                bm25_k1=args.bm25_k1,
+                bm25_b=args.bm25_b,
+            )
+            logger.info(
+                "Graph (%s) built with min_weight %.3f -> %d nodes, %d edges",
+                weight_mode,
+                min_weight,
+                graph.number_of_nodes(),
+                graph.number_of_edges(),
+            )
 
-    for label, min_weight, resolution, communities in experiments:
+            for resolution in args.resolution:
+                communities = run_louvain(graph, resolution=resolution, seed=args.seed)
+                experiments.append(
+                    (
+                        weight_mode,
+                        f"{weight_mode}|louvain(res={resolution:.2f}, min_w={min_weight:.3f})",
+                        min_weight,
+                        resolution,
+                        communities,
+                    )
+                )
+
+            if args.greedy:
+                communities = run_greedy(graph)
+                experiments.append(
+                    (
+                        weight_mode,
+                        f"{weight_mode}|greedy(min_w={min_weight:.3f})",
+                        min_weight,
+                        math.nan,
+                        communities,
+                    )
+                )
+
+            if args.label_propagation:
+                communities = run_label_propagation(graph, seed=args.seed)
+                experiments.append(
+                    (
+                        weight_mode,
+                        f"{weight_mode}|label_propagation(min_w={min_weight:.3f})",
+                        min_weight,
+                        math.nan,
+                        communities,
+                    )
+                )
+
+    for weight_mode, label, min_weight, resolution, communities in experiments:
         summary = summarize_partition(
             communities,
             pipeline.city_names,
@@ -656,11 +1062,20 @@ def main() -> None:
             sample_limit=args.sample_limit,
             community_limit=args.community_limit,
         )
+        focus_counts = [
+            len(set(members) & focus_city_set)
+            for members in communities
+        ]
+        focus_counts_repr = ", ".join(
+            f"C{i}={count}" for i, count in enumerate(focus_counts) if count > 0
+        )
         logger.info(
-            "[%s] → %d communities, largest sizes: %s",
+            "[%s] %s -> %d communities, largest sizes: %s, focus_hits: %s",
+            weight_mode,
             label,
             summary['community_count'],
             summary['largest_sizes'],
+            focus_counts_repr or 'none',
         )
         focus_report = format_focus_report(
             focus_city_codes,
@@ -671,6 +1086,8 @@ def main() -> None:
         print(f"Experiment: {label}")
         print(f"Communities: {summary['community_count']}")
         print(f"Largest community sizes: {summary['largest_sizes']}")
+        if focus_counts_repr:
+            print(f"Focus hits per community: {focus_counts_repr}")
         print(f"Focus city distribution: {focus_report}")
         print("Top communities:")
         for entry in summary['top_communities']:
