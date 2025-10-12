@@ -15,7 +15,7 @@ from typing import Dict, Iterable, List
 TYPE_PREFIXES = {
     "רחוב", "רח", "רח'", "שדרות", "שד", "שד'", "דרך", "כביש",
     "שביל", "נתיב", "סמטה", "מבוי", "כיכר", "מעלה", "ככר", "מחלף", "מבוא",
-    "שכ", "סמ", "נחל"
+    "שכ", "סמ", "נחל", "דרכ", "מחלפ"
 }
 
 DROP_DEF_HE = False  # drop leading ה- (definite article) if True
@@ -226,16 +226,23 @@ def normalize_csv_file(csv_path):
 # Test the fix with example streets
 def test_examples():
     test_rows = [
-        {"city_code": "1", "city_name": "Test City", "street_code": "1", "street_name": "שיטה"},
-        {"city_code": "1", "city_name": "Test City", "street_code": "2", "street_name": "השיטה"},
-        {"city_code": "1", "city_name": "Test City", "street_code": "3", "street_name": "שביל השיטה"},
-        {"city_code": "1", "city_name": "Test City", "street_code": "4", "street_name": "נתיב הנרקיס"},
-        {"city_code": "1", "city_name": "Test City", "street_code": "5", "street_name": "בטן אל-הווא סמ3"},
+        {"city_code": "1", "city_name": "Test City",
+            "street_code": "1", "street_name": "שיטה"},
+        {"city_code": "1", "city_name": "Test City",
+            "street_code": "2", "street_name": "השיטה"},
+        {"city_code": "1", "city_name": "Test City",
+            "street_code": "3", "street_name": "שביל השיטה"},
+        {"city_code": "1", "city_name": "Test City",
+            "street_code": "4", "street_name": "נתיב הנרקיס"},
+        {"city_code": "1", "city_name": "Test City",
+            "street_code": "5", "street_name": "בטן אל-הווא סמ3"},
     ]
     print("Testing normalization with examples:")
     normalized = normalize_csv_file_from_rows(test_rows)
     for row in normalized:
-        print(f"'{row['street_name']}' -> '{row['norm_display']}' (key: {row['norm_key']})")
+        print(
+            f"'{row['street_name']}' -> '{row['norm_display']}' (key: {row['norm_key']})")
+
 
 def normalize_csv_file_from_rows(rows_data):
     # Adapted from normalize_csv_file to work with in-memory rows
@@ -292,6 +299,7 @@ def normalize_csv_file_from_rows(rows_data):
         })
     return normalized_rows
 
+
 # --- Optional: quick CLI preview ---
 if __name__ == "__main__":
     import sys
@@ -299,7 +307,6 @@ if __name__ == "__main__":
     # Default input and output files
     default_input = "street_names.csv"
     default_output = "data/raw/norm.csv"
-
 
     inp = sys.argv[1] if len(sys.argv) > 1 else default_input
     outp = sys.argv[2] if len(sys.argv) > 2 else default_output
