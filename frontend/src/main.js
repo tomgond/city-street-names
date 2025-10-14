@@ -55,6 +55,8 @@ const state = {
     map: new Map(),
     total: 0
   },
+  communityConfig: {},
+  graphAvailableMetrics: ['weightedJaccard', 'jaccard'],
   graphNodeScoreCache: new Map(),
   communityStreetSignatures: new Map(),
   cityView: {
@@ -95,6 +97,58 @@ const HEBREW_COLLATOR = new Intl.Collator('he', {
 const NUMBER_FORMAT = new Intl.NumberFormat('he-IL');
 
 const STREET_DIRECTORY_BATCH_SIZE = 150;
+
+const KNOWN_GRAPH_METRICS = [
+  'weightedJaccard',
+  'jaccard',
+  'inverse_df',
+  'binary_cosine',
+  'tfidf_cosine'
+];
+
+const METRIC_DISPLAY_LABELS = {
+  weightedJaccard: 'Jaccard משוקלל',
+  jaccard: 'Jaccard רגיל',
+  inverse_df: 'קירבה מבוססת IDF',
+  binary_cosine: 'Cosine (ערכות בינאריות)',
+  tfidf_cosine: 'Cosine (TF-IDF)'
+};
+
+function normalizeMetricKey(metric) {
+  if (!metric) return 'weightedJaccard';
+  const key = String(metric).trim();
+  if (key === 'weighted' || key === 'weighted_jaccard') return 'weightedJaccard';
+  if (key === 'jaccard') return 'jaccard';
+  if (key === 'inverse_df' || key === 'inverse-df') return 'inverse_df';
+  if (key === 'binary_cosine' || key === 'binary-cosine' || key === 'binary') return 'binary_cosine';
+  if (key === 'tfidf_cosine' || key === 'tfidf-cosine' || key === 'tfidf') return 'tfidf_cosine';
+  return key;
+}
+
+function getMetricDisplayName(metricKey) {
+  return METRIC_DISPLAY_LABELS[metricKey] || METRIC_DISPLAY_LABELS.weightedJaccard;
+}
+
+function deriveAvailableGraphMetrics(similarityTop, communityConfig = {}) {
+  const metrics = new Set(['weightedJaccard', 'jaccard']);
+  const desired = normalizeMetricKey(communityConfig.metricKey || communityConfig.weightMode);
+  if (desired) metrics.add(desired);
+
+  const sampleLists = Object.values(similarityTop || {}).slice(0, 25);
+  sampleLists.forEach(list => {
+    (list || []).forEach(entry => {
+      if (!entry || typeof entry !== 'object') return;
+      KNOWN_GRAPH_METRICS.forEach(metricKey => {
+        const value = Number(entry[metricKey]);
+        if (Number.isFinite(value)) {
+          metrics.add(metricKey);
+        }
+      });
+    });
+  });
+
+  return Array.from(metrics).filter(key => KNOWN_GRAPH_METRICS.includes(key));
+}
 
 const elements = {
   views: Array.from(document.querySelectorAll('[data-view]')),
@@ -363,10 +417,29 @@ function getSimilarityEntry(sourceId, targetId) {
 function getSimilarityMetric(sourceId, targetId, metric = 'weightedJaccard') {
   const entry = getSimilarityEntry(sourceId, targetId);
   if (!entry) return 0;
-  const value = entry?.[metric];
+  const key = normalizeMetricKey(metric);
+  const value = entry?.[key];
   if (typeof value === 'number') return value;
   const numeric = Number(value);
   return Number.isFinite(numeric) ? numeric : 0;
+}
+
+function updateGraphMetricOptions() {
+  const metricSelect = elements.graph.metricSelect;
+  if (!metricSelect) return;
+  const metrics = state.graphAvailableMetrics && state.graphAvailableMetrics.length
+    ? state.graphAvailableMetrics
+    : ['weightedJaccard', 'jaccard'];
+  const uniqueMetrics = Array.from(new Set(metrics.map(normalizeMetricKey))).filter(key =>
+    KNOWN_GRAPH_METRICS.includes(key)
+  );
+  const current = normalizeMetricKey(state.graphSettings.metric || uniqueMetrics[0] || 'weightedJaccard');
+  metricSelect.innerHTML = uniqueMetrics
+    .map(key => `<option value="${key}">${getMetricDisplayName(key)}</option>`)
+    .join('');
+  const selected = uniqueMetrics.includes(current) ? current : uniqueMetrics[0] || 'weightedJaccard';
+  state.graphSettings.metric = selected;
+  metricSelect.value = selected;
 }
 
 
@@ -672,18 +745,29 @@ async function loadData() {
       return payload;
     };
 
-    const [cities, similarityTop, streetIndex, rarity, honorGraph, uniquenessRaw] = await Promise.all([
+    const [
+      cities,
+      similarityTopRaw,
+      streetIndex,
+      rarity,
+      honorGraph,
+      uniquenessRaw,
+      communityConfig
+    ] = await Promise.all([
       fetchJson('cities.json'),
       fetchJson('similarity_top.json'),
       fetchJson('street_index.json'),
       fetchJson('rarity_weights.json'),
       fetchJson('city_name_graph.json', { optional: true }),
-      fetchJson('city_uniqueness.json', { optional: true })
+      fetchJson('city_uniqueness.json', { optional: true }),
+      fetchJson('community_config.json', { optional: true })
     ]);
 
     console.info('[data] datasets loaded', {
       cities: Array.isArray(cities) ? cities.length : 'n/a',
-      similarityTop: similarityTop && typeof similarityTop === 'object' ? Object.keys(similarityTop).length : 'n/a',
+      similarityTop: similarityTopRaw && typeof similarityTopRaw === 'object'
+        ? Object.keys(similarityTopRaw).length
+        : 'n/a',
       streets: streetIndex && typeof streetIndex === 'object' ? Object.keys(streetIndex).length : 'n/a'
     });
 
@@ -743,7 +827,19 @@ async function loadData() {
       city.uniquenessRank = uniqueness.rank ?? city.uniquenessRank;
     });
 
-    state.similarityTop = new Map(Object.entries(similarityTop || {}));
+    state.communityConfig = communityConfig || {};
+    const similarityTopObject = similarityTopRaw && typeof similarityTopRaw === 'object' ? similarityTopRaw : {};
+    const availableMetrics = deriveAvailableGraphMetrics(similarityTopObject, state.communityConfig);
+    state.graphAvailableMetrics = availableMetrics.length ? availableMetrics : ['weightedJaccard', 'jaccard'];
+    let defaultMetric = normalizeMetricKey(
+      state.communityConfig.metricKey || state.communityConfig.weightMode || state.graphSettings.metric
+    );
+    if (!state.graphAvailableMetrics.includes(defaultMetric)) {
+      defaultMetric = state.graphAvailableMetrics[0];
+    }
+    state.graphSettings.metric = defaultMetric;
+
+    state.similarityTop = new Map(Object.entries(similarityTopObject));
     const similarityLookup = new Map();
     state.similarityTop.forEach((list, cityId) => {
       const directMap = similarityLookup.get(cityId) || new Map();
@@ -765,6 +861,7 @@ async function loadData() {
       similarityLookup.set(cityId, directMap);
     });
     state.similarityLookup = similarityLookup;
+    updateGraphMetricOptions();
 
     state.streetIndex = new Map(Object.entries(streetIndex || {}));
     state.streetKeyCache.clear();
@@ -1450,6 +1547,7 @@ function computeGraphNodeScore(cityId) {
 
   const baseStreetCount = Number(city.streetCount || 0);
   const neighbors = state.similarityLookup.get(key) || new Map();
+  const metricKey = normalizeMetricKey(state.graphSettings?.metric || 'weightedJaccard');
   let crossCommunityCount = 0;
   let crossCommunityWeight = 0;
   let totalWeight = 0;
@@ -1467,9 +1565,7 @@ function computeGraphNodeScore(cityId) {
     const neighborCommunity = typeof neighborCity?.community === 'number' && Number.isFinite(neighborCity.community)
       ? neighborCity.community
       : null;
-    const weight = Number(
-      item.weightedJaccard ?? item.jaccard ?? item.weight ?? 0
-    );
+    const weight = extractNeighborWeight(item, metricKey);
     if (!Number.isFinite(weight) || weight <= 0) {
       return;
     }
@@ -1492,8 +1588,13 @@ function computeGraphNodeScore(cityId) {
   return score;
 }
 
-function extractNeighborWeight(neighbor) {
+function extractNeighborWeight(neighbor, metricKey = 'weightedJaccard') {
   if (!neighbor) return 0;
+  const normalized = normalizeMetricKey(metricKey);
+  const directValue = Number(neighbor?.[normalized]);
+  if (Number.isFinite(directValue) && directValue > 0) {
+    return directValue;
+  }
   const weighted = Number(neighbor.weightedJaccard);
   if (Number.isFinite(weighted) && weighted > 0) {
     return weighted;
@@ -1508,12 +1609,13 @@ function extractNeighborWeight(neighbor) {
 function cityHasGraphConnections(cityId) {
   const key = String(cityId || '');
   if (!key) return false;
+  const metricKey = normalizeMetricKey(state.graphSettings?.metric || 'weightedJaccard');
 
   if (state.similarityLookup instanceof Map) {
     const neighbors = state.similarityLookup.get(key);
     if (neighbors && neighbors.size) {
       for (const neighbor of neighbors.values()) {
-        if (extractNeighborWeight(neighbor) > 0) {
+        if (extractNeighborWeight(neighbor, metricKey) > 0) {
           return true;
         }
       }
@@ -1522,7 +1624,7 @@ function cityHasGraphConnections(cityId) {
 
   const fallback = state.similarityTop.get(key) || [];
   for (const neighbor of fallback) {
-    if (extractNeighborWeight(neighbor) > 0) {
+    if (extractNeighborWeight(neighbor, metricKey) > 0) {
       return true;
     }
   }
@@ -1777,7 +1879,7 @@ function renderNetworkGraph(target, options = {}) {
 
   const {
     limit = 50,
-    maxLinks = 350,
+    maxLinks = 2000,
     height: forcedHeight = null,
     cacheKey = '',
     layout = (state.graphSettings && state.graphSettings.layout) || 'force',
@@ -1786,16 +1888,16 @@ function renderNetworkGraph(target, options = {}) {
     focusCityId = undefined
   } = options;
 
-  let metricKey = typeof metric === 'string' ? metric : 'weightedJaccard';
-  if (metricKey === 'weighted') {
-    metricKey = 'weightedJaccard';
+  const availableMetrics = state.graphAvailableMetrics && state.graphAvailableMetrics.length
+    ? state.graphAvailableMetrics
+    : ['weightedJaccard', 'jaccard'];
+  let metricKey = normalizeMetricKey(typeof metric === 'string' ? metric : state.graphSettings.metric);
+  if (!availableMetrics.includes(metricKey)) {
+    metricKey = availableMetrics[0] || 'weightedJaccard';
   }
-  if (metricKey !== 'weightedJaccard' && metricKey !== 'jaccard') {
-    console.warn('[viz] unsupported metric requested, defaulting to weightedJaccard', { metric });
-    metricKey = 'weightedJaccard';
-  }
+  state.graphSettings.metric = metricKey;
 
-  const metricDisplayName = metricKey === 'weightedJaccard' ? 'Jaccard משוקלל' : 'Jaccard רגיל';
+  const metricDisplayName = getMetricDisplayName(metricKey);
 
   const focusId = focusCityId ? String(focusCityId) : state.graphFilters.focusCityId || '';
 
@@ -1858,7 +1960,11 @@ function renderNetworkGraph(target, options = {}) {
         weight,
         shared: neighbor.intersectionSize,
         weightedJaccard: Number(neighbor.weightedJaccard || 0),
-        jaccard: Number(neighbor.jaccard || 0)
+        jaccard: Number(neighbor.jaccard || 0),
+        inverse_df: Number(neighbor.inverse_df || 0),
+        binary_cosine: Number(neighbor.binary_cosine || 0),
+        tfidf_cosine: Number(neighbor.tfidf_cosine || 0),
+        communityWeight: Number(neighbor.communityWeight || 0)
       });
     });
   });
@@ -2344,7 +2450,7 @@ function renderNetworkPreview(force = false) {
   if (!force && state.rendered.networkPreview) return;
   renderNetworkGraph(container, {
     limit: 60,
-    maxLinks: 1080,
+    maxLinks: 2000,
     cacheKey: 'preview',
     layout: state.graphSettings.layout,
     metric: state.graphSettings.metric,
@@ -2362,7 +2468,7 @@ function renderGraphView(force = false) {
   const height = Math.max(bounds.height || container.clientHeight || 0, 620);
   renderNetworkGraph(container, {
     limit: 100,
-    maxLinks: 1800,
+    maxLinks: 5000,
     height,
     cacheKey: 'graph-full',
     layout: state.graphSettings.layout,
@@ -3981,9 +4087,15 @@ function setupGraphControls() {
   if (metricSelect) {
     metricSelect.value = state.graphSettings.metric;
     metricSelect.addEventListener('change', event => {
-      const newMetric = (event.target && event.target.value) || 'weightedJaccard';
+      const newMetric = normalizeMetricKey((event.target && event.target.value) || 'weightedJaccard');
+      if (!state.graphAvailableMetrics.includes(newMetric)) {
+        console.warn('[viz] unsupported metric requested; ignoring', { metric: newMetric });
+        metricSelect.value = state.graphSettings.metric;
+        return;
+      }
       if (state.graphSettings.metric === newMetric) return;
       state.graphSettings.metric = newMetric;
+      metricSelect.value = newMetric;
       state.graphLayouts.clear();
       state.rendered.graphFull = false;
       state.rendered.networkPreview = false;
@@ -4046,6 +4158,8 @@ function setupGraphControls() {
       refreshGraphs();
     });
   }
+
+  updateGraphMetricOptions();
 }
 
 function navigateToStreet(streetKey, { scroll = true } = {}) {

@@ -24,10 +24,53 @@ This project analyzes similarity between Israeli street names and publishes the 
 ## Coding Conventions & Design Guardrails
 
 * Maintain the warm cream palette already defined in `frontend/src/styles.css` when adjusting colors. If you must introduce a new color, ensure sufficient contrast with `var(--text)` and document the choice in comments.
-* Frontend DOM manipulation happens in `frontend/src/main.js` with vanilla JS + D3. Extend existing utility sections instead of rewriting large blocks—incremental changes are easier to reason about and keep performance steady.
+* Frontend DOM manipulation happens in `frontend/src/main.js` with vanilla JS + D3. Extend existing utility sections instead of rewriting large blocks-incremental changes are easier to reason about and keep performance steady.
 * When updating search or filtering logic, remember that Fuse.js is initialized once. Cache-heavy computations (e.g., building large arrays) should remain lazily evaluated to keep initial load times quick.
 * Avoid mutating `node_modules/` or committed datasets (`street_names.csv`, `norm.csv`) unless the task explicitly involves data updates.
 * Document any new environment variables or CLI flags directly in this file so future agents can reproduce your work quickly.
+
+## Community Detection & Similarity Metrics (Updated Oct 2025)
+
+### Backend (`src/aggregation/build_data.py`)
+
+The pipeline now supports multiple similarity metrics when determining city communities. Parameters can be supplied via environment variables (preferred) or by editing `build_data.py` defaults.
+
+| Env variable | Default | Meaning |
+| --- | --- | --- |
+| `COMMUNITY_WEIGHT_MODE` | `inverse_df` | Determines how edges are weighed when building the city similarity graph. Supported values: `weighted_jaccard`, `jaccard`, `inverse_df`, `binary_cosine`, `tfidf_cosine`. |
+| `COMMUNITY_IDF_POWER` | `1.0` | Exponent applied to inverse document frequency when using `inverse_df` or `tfidf_cosine`. Higher values emphasize rare streets. |
+| `COMMUNITY_MIN_SHARED` | `3` | Minimum number of shared streets required before keeping an edge. |
+| `COMMUNITY_MIN_WEIGHT` | `0.0` | Minimum edge weight (after metric calculation) required to keep an edge. |
+| `COMMUNITY_RESOLUTION` | `1.2` | Louvain resolution. Lower values produce fewer, larger communities; higher values produce more, smaller communities. |
+| `COMMUNITY_MAX_DF_FRACTION` | `0.2` | Drop streets that appear in more than this fraction of cities before building the community graph. Use `0` to disable. |
+
+After community detection, the script annotates each entry in `similarity_top.json` with additional metrics to keep backend and frontend in sync:
+
+* `inverse_df`, `binary_cosine`, `tfidf_cosine`: Numeric scores matching the calculation used by `COMMUNITY_WEIGHT_MODE`.
+* `communityWeight`: The metric actually used during detection (one of the above or the legacy Jaccard scores).
+* `community_config.json`: Exported alongside the other datasets with the effective parameters (weight mode, min weight, IDF power, etc.) used during the run. The frontend consumes this to choose default display settings.
+
+### Frontend (`frontend/src/main.js`, `frontend/index.html`)
+
+The graph view now adapts automatically to the backend’s chosen metric:
+
+* On load, `community_config.json` is fetched and the available metrics are inferred from `similarity_top.json`.
+* The metric dropdown is populated dynamically (no longer hard-coded to Jaccard options). The active value defaults to the backend’s `communityWeight`.
+* Graph rendering, tooltip text, node scoring, and “has connection” checks all respect the selected metric. Changing the dropdown rerenders both the preview and full graph.
+* Edge pruning still applies (limit controlled by `maxLinks` argument), but now uses the same metric as community detection, keeping the structure consistent across tooling and production.
+
+### Reproducing the New Default Behaviour
+
+```
+COMMUNITY_WEIGHT_MODE=inverse_df \
+COMMUNITY_IDF_POWER=1.0 \
+COMMUNITY_MIN_SHARED=0 \
+COMMUNITY_MIN_WEIGHT=0.0 \
+COMMUNITY_RESOLUTION=1.2 \
+python -m src.aggregation.build_data
+```
+
+This matches the “Winner” configuration from the exploration tool. Adjust the env vars to experiment; the frontend will automatically reflect any changes after the JSON files are regenerated.
 
 ## GitHub Actions & Generated Artifacts
 

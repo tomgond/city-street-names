@@ -34,8 +34,14 @@ from src.normalization.norm_data import normalize_name
 MIN_STREETS_FOR_HONOR_GRAPH = 30
 
 # Maximum number of similar neighbors retained per city in similarity outputs
-DEFAULT_TOP_NEIGHBOR_COUNT = int(os.environ.get('CITY_SIMILARITY_TOP_N', '20'))
-DEFAULT_TOP_NEIGHBOR_PERCENTILE = float(os.environ.get('CITY_SIMILARITY_TOP_PERCENTILE', '30'))
+DEFAULT_TOP_NEIGHBOR_COUNT = int(os.environ.get('CITY_SIMILARITY_TOP_N', '0'))
+DEFAULT_TOP_NEIGHBOR_PERCENTILE = float(os.environ.get('CITY_SIMILARITY_TOP_PERCENTILE', '0'))
+DEFAULT_COMMUNITY_WEIGHT_MODE = os.environ.get('COMMUNITY_WEIGHT_MODE', 'inverse_df').strip().lower() or 'inverse_df'
+DEFAULT_COMMUNITY_IDF_POWER = float(os.environ.get('COMMUNITY_IDF_POWER', '1'))
+DEFAULT_COMMUNITY_MIN_SHARED = int(float(os.environ.get('COMMUNITY_MIN_SHARED', '3')))
+DEFAULT_COMMUNITY_MIN_WEIGHT = float(os.environ.get('COMMUNITY_MIN_WEIGHT', '0.0'))
+DEFAULT_COMMUNITY_RESOLUTION = float(os.environ.get('COMMUNITY_RESOLUTION', '1.2'))
+DEFAULT_COMMUNITY_MAX_DF_FRACTION = float(os.environ.get('COMMUNITY_MAX_DF_FRACTION', '0.0'))
 
 # Set up logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -54,6 +60,7 @@ class StreetProcessingPipeline:
         self.city_name_graph = {}
         self.city_uniqueness = {}
         self.city_uniqueness_ranking = []
+        self.community_config = {}
 
     def load_data(self, csv_path):
         """Load street data from CSV file."""
@@ -237,9 +244,56 @@ class StreetProcessingPipeline:
             for street in sorted_streets[:top_n]
         ]
 
-    def detect_communities(self, similarity_top, metric='weightedJaccard', min_weight=0.0):
+    def detect_communities(
+        self,
+        similarity_top,
+        metric='weightedJaccard',
+        min_weight=DEFAULT_COMMUNITY_MIN_WEIGHT,
+        *,
+        weight_mode=DEFAULT_COMMUNITY_WEIGHT_MODE,
+        idf_power=DEFAULT_COMMUNITY_IDF_POWER,
+        min_shared=DEFAULT_COMMUNITY_MIN_SHARED,
+        resolution=DEFAULT_COMMUNITY_RESOLUTION,
+        max_df_fraction=DEFAULT_COMMUNITY_MAX_DF_FRACTION,
+    ):
         """Detect communities using NetworkX community detection algorithms."""
-        logger.info("Detecting city communities using NetworkX (metric=%s)", metric)
+        weight_mode_normalized = (weight_mode or '').strip().lower()
+        min_shared_threshold = max(0, int(min_shared or 0))
+        try:
+            idf_power_value = float(idf_power)
+        except (TypeError, ValueError):
+            idf_power_value = 1.0
+        try:
+            max_df_fraction_value = float(max_df_fraction)
+        except (TypeError, ValueError):
+            max_df_fraction_value = DEFAULT_COMMUNITY_MAX_DF_FRACTION
+        max_df_fraction_value = max(0.0, min(max_df_fraction_value, 1.0))
+        logger.info(
+            "Detecting city communities using NetworkX (metric=%s, weight_mode=%s, idf_power=%.2f, min_shared=%d, min_weight=%.3f, resolution=%.2f, max_df=%.2f)",
+            metric,
+            weight_mode,
+            idf_power,
+            min_shared,
+            min_weight,
+            resolution,
+            max_df_fraction_value,
+        )
+        metric_field_map = {
+            'weighted_jaccard': 'weightedJaccard',
+            'jaccard': 'jaccard',
+            'inverse_df': 'inverse_df',
+            'binary_cosine': 'binary_cosine',
+            'tfidf_cosine': 'tfidf_cosine',
+        }
+        self.community_config = {
+            'weightMode': weight_mode_normalized,
+            'idfPower': idf_power_value,
+            'minShared': min_shared_threshold,
+            'minWeight': float(min_weight),
+            'resolution': float(resolution),
+            'metricKey': metric_field_map.get(weight_mode_normalized, 'weightedJaccard'),
+            'maxDfFraction': max_df_fraction_value,
+        }
         start_time = time.time()
 
         graph = nx.Graph()
@@ -258,6 +312,62 @@ class StreetProcessingPipeline:
         if metric_key == 'weighted_jaccard':
             metric_key = 'weightedJaccard'
 
+        use_inverse_df = weight_mode_normalized == 'inverse_df'
+        use_binary_cosine = weight_mode_normalized == 'binary_cosine'
+        use_tfidf_cosine = weight_mode_normalized == 'tfidf_cosine'
+
+        city_street_sets = {
+            str(city_code): set(streets.keys())
+            for city_code, streets in self.cities_data.items()
+        }
+        street_document_frequency = {
+            norm_key: max(len(cities), 1)
+            for norm_key, cities in self.street_to_cities.items()
+        }
+        total_city_count = max(len(city_street_sets), 1)
+
+        allowed_street_keys = None
+        if max_df_fraction_value > 0.0:
+            max_allowed_df = max_df_fraction_value * total_city_count
+            allowed_street_keys = {
+                key for key, df in street_document_frequency.items()
+                if df <= max_allowed_df
+            }
+            if allowed_street_keys:
+                city_street_sets = {
+                    city_id: {key for key in streets if key in allowed_street_keys}
+                    for city_id, streets in city_street_sets.items()
+                }
+                street_document_frequency = {
+                    key: street_document_frequency[key]
+                    for key in allowed_street_keys
+                }
+            else:
+                allowed_street_keys = None
+
+        tfidf_idf_cache = {}
+        tfidf_norm_cache = {}
+        if use_tfidf_cosine:
+            def tfidf_idf(key: str) -> float:
+                value = tfidf_idf_cache.get(key)
+                if value is not None:
+                    return value
+                df = street_document_frequency.get(key, 1)
+                base = math.log1p(total_city_count / df)
+                value = base ** idf_power_value if base > 0 else 0.0
+                tfidf_idf_cache[key] = value
+                return value
+
+            def tfidf_norm(city_code: str) -> float:
+                value = tfidf_norm_cache.get(city_code)
+                if value is not None:
+                    return value
+                streets = city_street_sets.get(city_code, set())
+                norm_sq = sum((tfidf_idf(key) ** 2) for key in streets)
+                value = math.sqrt(norm_sq) if norm_sq > 0 else 0.0
+                tfidf_norm_cache[city_code] = value
+                return value
+
         edge_weights = defaultdict(float)
         for source, neighbors in (similarity_top or {}).items():
             source_id = str(source)
@@ -270,7 +380,38 @@ class StreetProcessingPipeline:
                 target_id = str(target_raw)
                 if target_id == source_id:
                     continue
-                weight = float(entry.get(metric_key) or 0.0)
+                weight = 0.0
+                if weight_mode_normalized in {'inverse_df', 'binary_cosine', 'tfidf_cosine'}:
+                    streets_a = city_street_sets.get(source_id)
+                    streets_b = city_street_sets.get(target_id)
+                    if not streets_a or not streets_b:
+                        continue
+                    intersection_keys = streets_a & streets_b
+                    if min_shared_threshold and len(intersection_keys) < min_shared_threshold:
+                        continue
+                    if not intersection_keys:
+                        continue
+                    if use_inverse_df:
+                        numerator = 0.0
+                        for norm_key in intersection_keys:
+                            df = street_document_frequency.get(norm_key, 1)
+                            numerator += (1.0 / df) ** idf_power_value
+                        denominator = max(min(len(streets_a), len(streets_b)), 1)
+                        weight = numerator / denominator if denominator else 0.0
+                    elif use_binary_cosine:
+                        denom = math.sqrt(len(streets_a) * len(streets_b))
+                        if denom <= 0:
+                            continue
+                        weight = len(intersection_keys) / denom
+                    else:  # tfidf_cosine
+                        norm_a = tfidf_norm(source_id)
+                        norm_b = tfidf_norm(target_id)
+                        if norm_a <= 0 or norm_b <= 0:
+                            continue
+                        numerator = sum((tfidf_idf(key) ** 2) for key in intersection_keys)
+                        weight = numerator / (norm_a * norm_b)
+                else:
+                    weight = float(entry.get(metric_key) or 0.0)
                 if weight <= min_weight:
                     continue
                 edge_key = tuple(sorted((source_id, target_id)))
@@ -293,7 +434,8 @@ class StreetProcessingPipeline:
                 communities_iter = nx.algorithms.community.louvain_communities(
                     graph,
                     weight='weight',
-                    seed=42
+                    seed=42,
+                    resolution=max(resolution, 0.01),
                 )
                 community_groups = [sorted(map(str, group)) for group in communities_iter if group]
             except AttributeError:
@@ -325,6 +467,123 @@ class StreetProcessingPipeline:
         )
 
         return self
+
+    def annotate_similarity_metrics(self, similarity_top):
+        if not similarity_top:
+            return
+
+        weight_mode = self.community_config.get('weightMode', DEFAULT_COMMUNITY_WEIGHT_MODE)
+        idf_power = float(self.community_config.get('idfPower', DEFAULT_COMMUNITY_IDF_POWER))
+        try:
+            max_df_fraction = float(self.community_config.get('maxDfFraction', DEFAULT_COMMUNITY_MAX_DF_FRACTION))
+        except (TypeError, ValueError):
+            max_df_fraction = DEFAULT_COMMUNITY_MAX_DF_FRACTION
+        max_df_fraction = max(0.0, min(max_df_fraction, 1.0))
+
+        city_street_sets = {
+            str(city_code): set(streets.keys())
+            for city_code, streets in self.cities_data.items()
+        }
+        street_document_frequency = {
+            norm_key: max(len(cities), 1)
+            for norm_key, cities in self.street_to_cities.items()
+        }
+        total_city_count = max(len(city_street_sets), 1)
+
+        if max_df_fraction > 0.0:
+            max_allowed_df = max_df_fraction * total_city_count
+            allowed_street_keys = {
+                key for key, df in street_document_frequency.items()
+                if df <= max_allowed_df
+            }
+            if allowed_street_keys:
+                city_street_sets = {
+                    city_id: {key for key in streets if key in allowed_street_keys}
+                    for city_id, streets in city_street_sets.items()
+                }
+                street_document_frequency = {
+                    key: street_document_frequency[key]
+                    for key in allowed_street_keys
+                }
+
+        tfidf_idf_cache = {}
+        tfidf_norm_cache = {}
+
+        def tfidf_idf(key: str) -> float:
+            value = tfidf_idf_cache.get(key)
+            if value is not None:
+                return value
+            df = street_document_frequency.get(key, 1)
+            base = math.log1p(total_city_count / df)
+            value = base ** idf_power if base > 0 else 0.0
+            tfidf_idf_cache[key] = value
+            return value
+
+        def tfidf_norm(city_id: str) -> float:
+            value = tfidf_norm_cache.get(city_id)
+            if value is not None:
+                return value
+            streets = city_street_sets.get(city_id, set())
+            norm_sq = sum((tfidf_idf(key) ** 2) for key in streets)
+            value = math.sqrt(norm_sq) if norm_sq > 0 else 0.0
+            tfidf_norm_cache[city_id] = value
+            return value
+
+        for source_id, neighbors in similarity_top.items():
+            streets_a = city_street_sets.get(source_id, set())
+            len_a = len(streets_a)
+            norm_a = tfidf_norm(source_id) if streets_a else 0.0
+
+            for entry in neighbors:
+                target_id = str(entry.get('city'))
+                streets_b = city_street_sets.get(target_id, set())
+                len_b = len(streets_b)
+
+                if not streets_a or not streets_b:
+                    entry['inverse_df'] = 0.0
+                    entry['binary_cosine'] = 0.0
+                    entry['tfidf_cosine'] = 0.0
+                    entry['communityWeight'] = entry.get('weightedJaccard', 0.0)
+                    continue
+
+                intersection = streets_a & streets_b
+                if not intersection:
+                    entry['inverse_df'] = 0.0
+                    entry['binary_cosine'] = 0.0
+                    entry['tfidf_cosine'] = 0.0
+                    entry['communityWeight'] = entry.get('weightedJaccard', 0.0)
+                    continue
+
+                denominator = max(min(len_a, len_b), 1)
+                inverse_df = sum(
+                    (1.0 / street_document_frequency.get(key, 1)) ** idf_power for key in intersection
+                ) / denominator
+
+                cosine_denom = math.sqrt(len_a * len_b)
+                binary_cosine = (len(intersection) / cosine_denom) if cosine_denom > 0 else 0.0
+
+                norm_b = tfidf_norm(target_id)
+                tfidf_denom = norm_a * norm_b
+                tfidf_cosine = (
+                    sum(tfidf_idf(key) ** 2 for key in intersection) / tfidf_denom if tfidf_denom > 0 else 0.0
+                )
+
+                entry['inverse_df'] = inverse_df
+                entry['binary_cosine'] = binary_cosine
+                entry['tfidf_cosine'] = tfidf_cosine
+
+                if weight_mode == 'inverse_df':
+                    entry['communityWeight'] = inverse_df
+                elif weight_mode == 'binary_cosine':
+                    entry['communityWeight'] = binary_cosine
+                elif weight_mode == 'tfidf_cosine':
+                    entry['communityWeight'] = tfidf_cosine
+                elif weight_mode == 'weighted_jaccard':
+                    entry['communityWeight'] = entry.get('weightedJaccard', 0.0)
+                elif weight_mode == 'jaccard':
+                    entry['communityWeight'] = entry.get('jaccard', 0.0)
+                else:
+                    entry['communityWeight'] = entry.get('weightedJaccard', 0.0)
 
     def export_similarity_graph_for_gephi(self, similarity_top, output_dir, metric='weightedJaccard'):
         """Export the filtered similarity graph to a GEXF file for Gephi."""
@@ -919,6 +1178,10 @@ class StreetProcessingPipeline:
             with open(os.path.join(output_dir, 'city_similarities.json'), 'w', encoding='utf-8') as f:
                 json.dump(similarities, f, indent=2, ensure_ascii=False)
 
+        if self.community_config:
+            with open(os.path.join(output_dir, 'community_config.json'), 'w', encoding='utf-8') as f:
+                json.dump(self.community_config, f, indent=2, ensure_ascii=False)
+
         self._mirror_outputs(output_dir, top_similarities is not None)
 
     def _mirror_outputs(self, output_dir, has_similarity_top):
@@ -938,6 +1201,8 @@ class StreetProcessingPipeline:
             filenames.append('city_name_graph.json')
         if self.city_uniqueness_ranking:
             filenames.append('city_uniqueness.json')
+        if self.community_config:
+            filenames.append('community_config.json')
 
         for filename in filenames:
             source = output_path / filename
@@ -1041,7 +1306,12 @@ def main():
             retained_edge_count,
         )
 
-    pipeline.detect_communities(similarity_top)
+    pipeline.detect_communities(
+        similarity_top,
+        min_weight=DEFAULT_COMMUNITY_MIN_WEIGHT,
+        max_df_fraction=DEFAULT_COMMUNITY_MAX_DF_FRACTION,
+    )
+    pipeline.annotate_similarity_metrics(similarity_top)
     pipeline.export_similarity_graph_for_gephi(similarity_top, output_dir)
     pipeline.export_data(output_dir, similarities, similarity_top)
 
@@ -1049,4 +1319,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
