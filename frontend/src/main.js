@@ -97,6 +97,7 @@ const HEBREW_COLLATOR = new Intl.Collator('he', {
 const NUMBER_FORMAT = new Intl.NumberFormat('he-IL');
 
 const STREET_DIRECTORY_BATCH_SIZE = 150;
+const GRAPH_COMMUNITY_DISPLAY_LIMIT = 8;
 
 const KNOWN_GRAPH_METRICS = [
   'weightedJaccard',
@@ -1632,7 +1633,7 @@ function cityHasGraphConnections(cityId) {
   return false;
 }
 
-function selectGraphNodes({ limit = 50, communityLimit = 6, focusCityId = '' } = {}) {
+function selectGraphNodes({ limit = 50, communityLimit = GRAPH_COMMUNITY_DISPLAY_LIMIT, focusCityId = '' } = {}) {
   const safeLimit = Math.max(1, Math.floor(limit || 1));
   const focusId = focusCityId ? String(focusCityId) : '';
   const validFocusId = focusId && state.cityMap.has(focusId) ? focusId : '';
@@ -1884,7 +1885,7 @@ function renderNetworkGraph(target, options = {}) {
     cacheKey = '',
     layout = (state.graphSettings && state.graphSettings.layout) || 'force',
     metric = (state.graphSettings && state.graphSettings.metric) || 'weightedJaccard',
-    communityLimit = 6,
+    communityLimit = GRAPH_COMMUNITY_DISPLAY_LIMIT,
     focusCityId = undefined
   } = options;
 
@@ -2454,7 +2455,7 @@ function renderNetworkPreview(force = false) {
     cacheKey: 'preview',
     layout: state.graphSettings.layout,
     metric: state.graphSettings.metric,
-    communityLimit: 6,
+    communityLimit: GRAPH_COMMUNITY_DISPLAY_LIMIT,
     focusCityId: state.graphFilters.focusCityId
   });
   state.rendered.networkPreview = true;
@@ -2473,7 +2474,7 @@ function renderGraphView(force = false) {
     cacheKey: 'graph-full',
     layout: state.graphSettings.layout,
     metric: state.graphSettings.metric,
-    communityLimit: 6,
+    communityLimit: GRAPH_COMMUNITY_DISPLAY_LIMIT,
     focusCityId: state.graphFilters.focusCityId
   });
   state.rendered.graphFull = true;

@@ -29,7 +29,7 @@ if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding='utf-8')
 
 from src.aggregation.build_data import (
-    DEFAULT_TOP_NEIGHBOR_COUNT,
+    DEFAULT_COMMUNITY_GRAPH_TOP_N,
     DEFAULT_TOP_NEIGHBOR_PERCENTILE,
     StreetProcessingPipeline,
 )
@@ -740,7 +740,7 @@ def main() -> None:
     parser.add_argument(
         '--top-neighbors',
         type=int,
-        default=DEFAULT_TOP_NEIGHBOR_COUNT,
+        default=DEFAULT_COMMUNITY_GRAPH_TOP_N,
         help='Maximum number of neighbors retained per city when building the similarity graph.',
     )
     parser.add_argument(

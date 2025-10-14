@@ -44,11 +44,19 @@ The pipeline now supports multiple similarity metrics when determining city comm
 | `COMMUNITY_RESOLUTION` | `1.2` | Louvain resolution. Lower values produce fewer, larger communities; higher values produce more, smaller communities. |
 | `COMMUNITY_MAX_DF_FRACTION` | `0.2` | Drop streets that appear in more than this fraction of cities before building the community graph. Use `0` to disable. |
 
+Additional similarity trimming controls:
+
+| Env variable | Default | Meaning |
+| --- | --- | --- |
+| `CITY_SIMILARITY_GRAPH_TOP_N` | `0` | Maximum neighbors retained per city *before* community detection (falls back to legacy `CITY_SIMILARITY_TOP_N` if set). |
+| `CITY_SIMILARITY_EXPORT_TOP_N` | `25` | Maximum neighbors exported per city in `similarity_top.json`. Entries are sorted by the active community weight metric. |
+> Legacy env var `CITY_SIMILARITY_TOP_N` is still read as a fallback, but prefer the new names so future runs stay consistent.
+
 After community detection, the script annotates each entry in `similarity_top.json` with additional metrics to keep backend and frontend in sync:
 
 * `inverse_df`, `binary_cosine`, `tfidf_cosine`: Numeric scores matching the calculation used by `COMMUNITY_WEIGHT_MODE`.
 * `communityWeight`: The metric actually used during detection (one of the above or the legacy Jaccard scores).
-* `community_config.json`: Exported alongside the other datasets with the effective parameters (weight mode, min weight, IDF power, etc.) used during the run. The frontend consumes this to choose default display settings.
+* `community_config.json`: Exported alongside the other datasets with the effective parameters (weight mode, min weight, IDF power, etc.) used during the run. The frontend consumes this to choose default display settings. The file now also records `graphTopLimit`, `neighborPercentile`, `exportNeighborLimit`, and `exportNeighborAverage` so you can see how aggressively the similarity lists were trimmed before shipping to the browser.
 
 ### Frontend (`frontend/src/main.js`, `frontend/index.html`)
 
@@ -64,9 +72,11 @@ The graph view now adapts automatically to the backend’s chosen metric:
 ```
 COMMUNITY_WEIGHT_MODE=inverse_df \
 COMMUNITY_IDF_POWER=1.0 \
-COMMUNITY_MIN_SHARED=0 \
+COMMUNITY_MIN_SHARED=3 \
 COMMUNITY_MIN_WEIGHT=0.0 \
 COMMUNITY_RESOLUTION=1.2 \
+COMMUNITY_MAX_DF_FRACTION=0.2 \
+CITY_SIMILARITY_EXPORT_TOP_N=25 \
 python -m src.aggregation.build_data
 ```
 

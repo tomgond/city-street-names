@@ -33,15 +33,16 @@ from src.normalization.norm_data import normalize_name
 # Minimum streets required for a city to appear in the honor graph
 MIN_STREETS_FOR_HONOR_GRAPH = 30
 
-# Maximum number of similar neighbors retained per city in similarity outputs
-DEFAULT_TOP_NEIGHBOR_COUNT = int(os.environ.get('CITY_SIMILARITY_TOP_N', '0'))
-DEFAULT_TOP_NEIGHBOR_PERCENTILE = float(os.environ.get('CITY_SIMILARITY_TOP_PERCENTILE', '0'))
+# Maximum number of similar neighbors considered during community graph construction
+DEFAULT_COMMUNITY_GRAPH_TOP_N = int(os.environ.get('CITY_SIMILARITY_GRAPH_TOP_N', '0'))
+DEFAULT_EXPORT_NEIGHBOR_COUNT = int(os.environ.get('CITY_SIMILARITY_EXPORT_TOP_N', '0'))
+DEFAULT_TOP_NEIGHBOR_PERCENTILE = float(os.environ.get('CITY_SIMILARITY_TOP_PERCENTILE', '35'))
 DEFAULT_COMMUNITY_WEIGHT_MODE = os.environ.get('COMMUNITY_WEIGHT_MODE', 'inverse_df').strip().lower() or 'inverse_df'
 DEFAULT_COMMUNITY_IDF_POWER = float(os.environ.get('COMMUNITY_IDF_POWER', '1'))
 DEFAULT_COMMUNITY_MIN_SHARED = int(float(os.environ.get('COMMUNITY_MIN_SHARED', '3')))
-DEFAULT_COMMUNITY_MIN_WEIGHT = float(os.environ.get('COMMUNITY_MIN_WEIGHT', '0.0'))
+DEFAULT_COMMUNITY_MIN_WEIGHT = float(os.environ.get('COMMUNITY_MIN_WEIGHT', '0.010'))
 DEFAULT_COMMUNITY_RESOLUTION = float(os.environ.get('COMMUNITY_RESOLUTION', '1.2'))
-DEFAULT_COMMUNITY_MAX_DF_FRACTION = float(os.environ.get('COMMUNITY_MAX_DF_FRACTION', '0.0'))
+DEFAULT_COMMUNITY_MAX_DF_FRACTION = float(os.environ.get('COMMUNITY_MAX_DF_FRACTION', '0.2'))
 
 # Set up logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -223,7 +224,7 @@ class StreetProcessingPipeline:
         self,
         city_a_streets,
         city_b_streets,
-        top_n=DEFAULT_TOP_NEIGHBOR_COUNT,
+        top_n=DEFAULT_COMMUNITY_GRAPH_TOP_N,
     ):
         """Get top shared streets by rarity weight."""
         intersection = city_a_streets & city_b_streets
@@ -293,6 +294,8 @@ class StreetProcessingPipeline:
             'resolution': float(resolution),
             'metricKey': metric_field_map.get(weight_mode_normalized, 'weightedJaccard'),
             'maxDfFraction': max_df_fraction_value,
+            'graphTopLimit': DEFAULT_COMMUNITY_GRAPH_TOP_N if DEFAULT_COMMUNITY_GRAPH_TOP_N > 0 else None,
+            'neighborPercentile': DEFAULT_TOP_NEIGHBOR_PERCENTILE,
         }
         start_time = time.time()
 
@@ -584,6 +587,73 @@ class StreetProcessingPipeline:
                     entry['communityWeight'] = entry.get('jaccard', 0.0)
                 else:
                     entry['communityWeight'] = entry.get('weightedJaccard', 0.0)
+
+    def build_similarity_export(
+        self,
+        similarity_top,
+        *,
+        export_limit=DEFAULT_EXPORT_NEIGHBOR_COUNT,
+        percentile=DEFAULT_TOP_NEIGHBOR_PERCENTILE,
+    ):
+        if not similarity_top:
+            return {}, {'raw_edges': 0, 'retained_edges': 0, 'mean_per_city': 0.0}
+
+        export_map = {}
+        raw_edges = 0
+        retained_edges = 0
+        city_counts = []
+        percentile_fraction = max(0.0, min(percentile / 100.0, 1.0))
+        threshold_values = []
+
+        for city_code, neighbors in similarity_top.items():
+            entries = list(neighbors or [])
+            raw_edges += len(entries)
+            if not entries:
+                export_map[str(city_code)] = []
+                city_counts.append(0)
+                continue
+
+            sorted_entries = sorted(
+                entries,
+                key=lambda entry: (
+                    entry.get('communityWeight')
+                    if entry.get('communityWeight') is not None
+                    else entry.get('weightedJaccard', 0.0),
+                    entry.get('weightedJaccard', 0.0),
+                    entry.get('jaccard', 0.0),
+                ),
+                reverse=True,
+            )
+
+            keep_count = len(sorted_entries)
+            if percentile_fraction > 0.0:
+                percentile_limit = max(1, math.ceil(len(sorted_entries) * percentile_fraction))
+                keep_count = min(keep_count, percentile_limit)
+            if export_limit > 0:
+                keep_count = min(keep_count, export_limit)
+
+            trimmed = sorted_entries[:keep_count]
+            if trimmed:
+                metric = trimmed[-1].get('communityWeight')
+                if metric is None:
+                    metric = trimmed[-1].get('weightedJaccard', 0.0)
+                threshold_values.append(metric or 0.0)
+
+            export_map[str(city_code)] = trimmed
+            retained_edges += len(trimmed)
+            city_counts.append(len(trimmed))
+
+        mean_per_city = (sum(city_counts) / len(city_counts)) if city_counts else 0.0
+
+        stats = {
+            'raw_edges': raw_edges,
+            'retained_edges': retained_edges,
+            'mean_per_city': mean_per_city,
+            'percentile_fraction': percentile_fraction,
+            'effective_threshold': min(threshold_values) if threshold_values else 0.0,
+        }
+
+        return export_map, stats
 
     def export_similarity_graph_for_gephi(self, similarity_top, output_dir, metric='weightedJaccard'):
         """Export the filtered similarity graph to a GEXF file for Gephi."""
@@ -1017,7 +1087,7 @@ class StreetProcessingPipeline:
                 top_streets = self.get_top_shared_streets(
                     city_a_streets,
                     city_b_streets,
-                    top_n=DEFAULT_TOP_NEIGHBOR_COUNT,
+                    top_n=DEFAULT_COMMUNITY_GRAPH_TOP_N,
                 )
 
                 base_pairs.append({
@@ -1245,11 +1315,11 @@ def main():
     from collections import defaultdict
 
     threshold = 0.00001
-    top_similarities = defaultdict(list)
+    similarity_candidates = defaultdict(list)
 
     def _append_similarity(source, target, pair):
         key = str(source)
-        top_similarities[key].append({
+        similarity_candidates[key].append({
             'city': str(target),
             'cityName': pipeline.city_names.get(target, ''),
             'weightedJaccard': round(pair['weighted_jaccard'], 4),
@@ -1269,21 +1339,21 @@ def main():
         _append_similarity(city_a, city_b, pair_data)
         _append_similarity(city_b, city_a, pair_data)
 
-    raw_edge_count = sum(len(sims) for sims in top_similarities.values())
+    raw_edge_count = sum(len(sims) for sims in similarity_candidates.values())
     percentile_fraction = max(0.0, min(DEFAULT_TOP_NEIGHBOR_PERCENTILE / 100.0, 1.0))
 
     similarity_top = {}
     retained_edge_count = 0
     percentile_thresholds = []
-    for city_code, sims in top_similarities.items():
+    for city_code, sims in similarity_candidates.items():
         sims.sort(key=lambda item: item['weightedJaccard'], reverse=True)
 
         keep_count = len(sims)
         if percentile_fraction > 0.0 and sims:
             percentile_limit = max(1, math.ceil(len(sims) * percentile_fraction))
             keep_count = min(keep_count, percentile_limit)
-        if DEFAULT_TOP_NEIGHBOR_COUNT > 0:
-            keep_count = min(keep_count, DEFAULT_TOP_NEIGHBOR_COUNT)
+        if DEFAULT_COMMUNITY_GRAPH_TOP_N > 0:
+            keep_count = min(keep_count, DEFAULT_COMMUNITY_GRAPH_TOP_N)
 
         filtered_entries = sims[:keep_count]
         if filtered_entries:
@@ -1312,8 +1382,31 @@ def main():
         max_df_fraction=DEFAULT_COMMUNITY_MAX_DF_FRACTION,
     )
     pipeline.annotate_similarity_metrics(similarity_top)
+
+    export_similarity_top, export_stats = pipeline.build_similarity_export(
+        similarity_top,
+        export_limit=DEFAULT_EXPORT_NEIGHBOR_COUNT,
+        percentile=DEFAULT_TOP_NEIGHBOR_PERCENTILE,
+    )
+
+    if pipeline.community_config is None:
+        pipeline.community_config = {}
+
+    pipeline.community_config['graphTopLimit'] = int(DEFAULT_COMMUNITY_GRAPH_TOP_N) if DEFAULT_COMMUNITY_GRAPH_TOP_N > 0 else None
+    pipeline.community_config['neighborPercentile'] = DEFAULT_TOP_NEIGHBOR_PERCENTILE
+    pipeline.community_config['exportNeighborLimit'] = int(DEFAULT_EXPORT_NEIGHBOR_COUNT) if DEFAULT_EXPORT_NEIGHBOR_COUNT > 0 else None
+    pipeline.community_config['exportNeighborAverage'] = export_stats.get('mean_per_city', 0.0)
+
+    logger.info(
+        "Prepared export similarity lists: %d of %d edges retained (avg %.1f neighbors/city, export limit=%s)",
+        export_stats.get('retained_edges', 0),
+        export_stats.get('raw_edges', 0),
+        export_stats.get('mean_per_city', 0.0),
+        'all' if DEFAULT_EXPORT_NEIGHBOR_COUNT <= 0 else DEFAULT_EXPORT_NEIGHBOR_COUNT,
+    )
+
     pipeline.export_similarity_graph_for_gephi(similarity_top, output_dir)
-    pipeline.export_data(output_dir, similarities, similarity_top)
+    pipeline.export_data(output_dir, similarities, export_similarity_top)
 
     logger.info("Processing complete!")
 
