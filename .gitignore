@@ -3,3 +3,6 @@
 /data/processed/
 /frontend/public/data/processed/
 /public/data/
+*.pyc
+/data/raw/norm.csv
+/.idea/
