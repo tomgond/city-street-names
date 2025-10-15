@@ -3254,12 +3254,11 @@ function renderDistinctiveCities(limit = 8) {
         <li>
           <a href="#/city/${entry.id}" class="top-city-link distinctive">
             <div class="row-main">
-              <span class="rank">#${rank}</span>
               <strong>${entry.name}</strong>
             </div>
             <div class="row-sub">
               <span>${uniqueCount.toLocaleString()} רחובות ייחודיים (${share})</span>
-              <span>ממוצע נדירות: ${formatRarityWeight(mean, 1)}, חציון: ${formatRarityWeight(median, 1)}</span>
+              <span>ממוצע נדירות: ${formatRarityWeight(mean, 1)}</span>
             </div>
           </a>
         </li>
