@@ -97,7 +97,7 @@ const HEBREW_COLLATOR = new Intl.Collator('he', {
 const NUMBER_FORMAT = new Intl.NumberFormat('he-IL');
 
 const STREET_DIRECTORY_BATCH_SIZE = 150;
-const GRAPH_COMMUNITY_DISPLAY_LIMIT = 8;
+const GRAPH_COMMUNITY_DISPLAY_LIMIT = 7;
 
 const KNOWN_GRAPH_METRICS = [
   'weightedJaccard',
@@ -423,6 +423,72 @@ function getSimilarityMetric(sourceId, targetId, metric = 'weightedJaccard') {
   if (typeof value === 'number') return value;
   const numeric = Number(value);
   return Number.isFinite(numeric) ? numeric : 0;
+}
+
+const SUPPORTED_CITY_SIMILARITY_METRICS = new Set(['weightedJaccard', 'inverse_df']);
+
+function resolveCitySimilarityMetric() {
+  const metricKey = normalizeMetricKey(
+    state.graphSettings.metric
+    || state.communityConfig.metricKey
+    || state.communityConfig.weightMode
+    || 'weightedJaccard'
+  );
+  return {
+    metricKey,
+    supported: SUPPORTED_CITY_SIMILARITY_METRICS.has(metricKey)
+  };
+}
+
+function resolveSimilarityScore(sourceId, entry, metricKey) {
+  if (!entry) return 0;
+  const normalized = normalizeMetricKey(metricKey);
+  const tryValue = value => (Number.isFinite(value) ? value : Number.isFinite(Number(value)) ? Number(value) : null);
+
+  if (normalized === 'inverse_df') {
+    const candidates = [
+      entry.communityWeight,
+      entry.inverse_df,
+      getSimilarityMetric(sourceId, entry.city, normalized)
+    ];
+    for (const candidate of candidates) {
+      const resolved = tryValue(candidate);
+      if (resolved !== null) return resolved;
+    }
+    return 0;
+  }
+
+  const candidates = [
+    entry.weightedJaccard,
+    entry.communityWeight,
+    getSimilarityMetric(sourceId, entry.city, normalized)
+  ];
+  for (const candidate of candidates) {
+    const resolved = tryValue(candidate);
+    if (resolved !== null) return resolved;
+  }
+  return 0;
+}
+
+function formatSimilarityScore(value, metricKey) {
+  const normalized = normalizeMetricKey(metricKey);
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) {
+    return normalized === 'weightedJaccard' ? '0.00%' : '0.00';
+  }
+  if (normalized === 'inverse_df') {
+    const digits = numeric >= 1 ? 2 : numeric >= 0.1 ? 2 : 3;
+    return numeric.toFixed(digits);
+  }
+  const percentage = numeric * 100;
+  const digits = percentage >= 10 ? 1 : percentage >= 1 ? 2 : 3;
+  return `${percentage.toFixed(digits)}%`;
+}
+
+function renderCityMetricWarning(container, metricKey) {
+  if (!container) return;
+  const label = getMetricDisplayName(normalizeMetricKey(metricKey));
+  container.innerHTML = `<p class="city-metric-warning">המדד שנבחר (${label}) אינו נתמך עדיין בתצוגת העיר.</p>`;
 }
 
 function updateGraphMetricOptions() {
@@ -3352,6 +3418,9 @@ function renderCity(primaryId, secondaryId = '') {
   setCityInputValue(elements.city.primarySelect, elements.city.primarySuggestions, normalizedPrimaryId);
 
   const similarity = state.similarityTop.get(normalizedPrimaryId) || [];
+  const { metricKey, supported: metricSupported } = resolveCitySimilarityMetric();
+  state.cityView.metricKey = metricKey;
+  state.cityView.metricSupported = metricSupported;
   const uniqueCount = city.uniqueStreetCount ?? 0;
   const uniqueShare = typeof city.uniqueStreetShare === 'number' ? city.uniqueStreetShare : city.streetCount ? uniqueCount / city.streetCount : 0;
   const meanRarity = typeof city.meanRarityWeight === 'number' ? city.meanRarityWeight : 0;
@@ -3410,33 +3479,48 @@ function renderCity(primaryId, secondaryId = '') {
     ${uniqueSection}
   `;
 
-  renderCityChart(city, similarity);
+  renderCityChart(city, similarity, metricKey, metricSupported);
   const selectedPartnerId = state.cityView.secondaryId || '';
-  renderCitySimilarButtons(normalizedPrimaryId, similarity, selectedPartnerId);
+  renderCitySimilarButtons(normalizedPrimaryId, similarity, selectedPartnerId, metricKey, metricSupported);
   if (selectedPartnerId) {
     setCityInputValue(elements.city.secondarySelect, elements.city.secondarySuggestions, selectedPartnerId);
   } else {
     setCityInputValue(elements.city.secondarySelect, elements.city.secondarySuggestions, '');
   }
-  renderSharedStreets(normalizedPrimaryId, selectedPartnerId || null);
+  renderSharedStreets(normalizedPrimaryId, selectedPartnerId || null, metricKey);
   renderOverlap(normalizedPrimaryId, selectedPartnerId || '');
 }
 
-function renderCityChart(city, similarity) {
+function renderCityChart(city, similarity, metricKey, metricSupported) {
   const container = elements.city.chart;
   if (!container) return;
   container.innerHTML = '';
   container.style.minHeight = '';
+  if (!metricSupported) {
+    renderCityMetricWarning(container, metricKey);
+    return;
+  }
   if (!similarity.length) {
-    container.innerHTML = '<p>לא נמצאו ערים עם דמיון משמעותי.</p>';
+    container.innerHTML = '<p>לא נמצאו רחובות משותפים משמעותיים בין הערים</p>';
     return;
   }
 
-  const data = similarity.slice(0, 10);
+  const data = similarity
+    .slice(0, 10)
+    .map(item => ({
+      ...item,
+      metricScore: resolveSimilarityScore(city.id, item, metricKey)
+    }));
+  const dataset = data.filter(entry => Number.isFinite(entry.metricScore) && entry.metricScore >= 0);
+
+  if (!dataset.length) {
+    container.innerHTML = '<p>אין רחובות משותפים להצגה</p>';
+    return;
+  }
   const labelAccessor = item => state.cityMap.get(item.city)?.name || item.city;
   const bounds = container.getBoundingClientRect();
   const containerWidth = Math.max(bounds.width || container.clientWidth || 0, 320);
-  const longestLabelLength = data.reduce((max, item) => {
+  const longestLabelLength = dataset.reduce((max, item) => {
     const label = labelAccessor(item) || '';
     return Math.max(max, label.length);
   }, 0);
@@ -3451,7 +3535,7 @@ function renderCityChart(city, similarity) {
   const barHeight = 38;
   const chartHeight = Math.max(
     220,
-    margin.top + margin.bottom + data.length * barHeight
+    margin.top + margin.bottom + dataset.length * barHeight
   );
   const chartWidth = Math.max(containerWidth, margin.left + 160);
   const tickCount = Math.max(3, Math.min(6, Math.round(chartWidth / 160)));
@@ -3476,7 +3560,9 @@ function renderCityChart(city, similarity) {
     .style('overflow', 'visible')
     .classed('city-similarity-chart', true);
 
-  const maxValue = d3.max(data, d => d.weightedJaccard) || 0.1;
+  const fallbackMax = normalizeMetricKey(metricKey) === 'weightedJaccard' ? 0.01 : 0.1;
+  const maxValueRaw = d3.max(dataset, d => d.metricScore) || 0;
+  const maxValue = maxValueRaw > 0 ? maxValueRaw : fallbackMax;
   const x = d3
     .scaleLinear()
     .domain([0, maxValue])
@@ -3485,11 +3571,11 @@ function renderCityChart(city, similarity) {
 
   const y = d3
     .scaleBand()
-    .domain(data.map(item => item.city))
+    .domain(dataset.map(item => item.city))
     .range([margin.top, chartHeight - margin.bottom])
-    .padding(Math.min(0.32, Math.max(0.18, 1 - data.length * 0.05)));
+    .padding(Math.min(0.32, Math.max(0.18, 1 - dataset.length * 0.05)));
 
-  const color = d3.scaleSequential(d3.interpolatePlasma).domain([0, Math.max(1, data.length - 1)]);
+  const color = d3.scaleSequential(d3.interpolatePlasma).domain([0, Math.max(1, dataset.length - 1)]);
 
   const grid = svg
     .append('g')
@@ -3513,25 +3599,26 @@ function renderCityChart(city, similarity) {
   const bars = svg
     .append('g')
     .selectAll('rect')
-    .data(data)
+    .data(dataset)
     .enter()
     .append('rect')
     .attr('x', margin.left)
     .attr('y', d => y(d.city))
     .attr('height', y.bandwidth())
-    .attr('width', d => Math.max(0, x(d.weightedJaccard) - margin.left))
+    .attr('width', d => Math.max(0, x(d.metricScore) - margin.left))
     .attr('fill', (_, i) => color(i))
     .attr('rx', 10)
     .style('cursor', 'pointer')
     .on('click', (_, d) => {
-      renderSharedStreets(city.id, d.city);
+      renderSharedStreets(city.id, d.city, metricKey);
       setCityInputValue(elements.city.secondarySelect, elements.city.secondarySuggestions, d.city);
       window.location.hash = `#/city/${city.id}/${d.city}`;
     });
 
   bars.append('title').text(d => {
     const label = labelAccessor(d);
-    return `${label}\nמדד דמיון משוקלל: ${d.weightedJaccard.toFixed(3)}`;
+    return `${label}
+ערך דמיון: ${formatSimilarityScore(d.metricScore, metricKey)}`;
   });
 
   const yAxis = svg
@@ -3557,7 +3644,7 @@ function renderCityChart(city, similarity) {
 
   const labelNodes = labelGroup
     .selectAll('g')
-    .data(data)
+    .data(dataset)
     .enter()
     .append('g')
     .attr('class', 'city-chart-y-label')
@@ -3616,7 +3703,7 @@ function renderCityChart(city, similarity) {
       d3
         .axisBottom(x)
         .ticks(tickCount)
-        .tickFormat(value => value.toFixed(2))
+        .tickFormat(value => formatSimilarityScore(value, metricKey))
         .tickSizeOuter(0)
     );
 
@@ -3630,15 +3717,19 @@ function renderCityChart(city, similarity) {
     .style('stroke-width', '4px');
 
   xAxis.select('.domain').remove();
-
 }
 
-function renderCitySimilarButtons(primaryId, similarity, activeCityId = '') {
+
+function renderCitySimilarButtons(primaryId, similarity, activeCityId = '', metricKey, metricSupported) {
   const container = elements.city.similarList;
   if (!container) return;
   container.innerHTML = '';
+  if (!metricSupported) {
+    renderCityMetricWarning(container, metricKey);
+    return;
+  }
   if (!similarity.length) {
-    container.innerHTML = '<p>אין ערים דומות להצגה.</p>';
+    container.innerHTML = '<p>אין ערים דומות להצגה</p>';
     return;
   }
 
@@ -3648,13 +3739,14 @@ function renderCitySimilarButtons(primaryId, similarity, activeCityId = '') {
     button.type = 'button';
     button.dataset.cityId = item.city;
     const cityLabel = state.cityMap.get(item.city)?.name || item.city;
-    button.textContent = cityLabel + ' (' + item.weightedJaccard.toFixed(3) + ')';
+    const score = resolveSimilarityScore(primaryId, item, metricKey);
+    button.textContent = cityLabel + ' (' + formatSimilarityScore(score, metricKey) + ')';
     button.addEventListener('click', () => {
       state.cityView.primaryId = primaryId;
       state.cityView.secondaryId = item.city;
       setActiveSimilarCity(item.city);
       setCityInputValue(elements.city.secondarySelect, elements.city.secondarySuggestions, item.city);
-      renderSharedStreets(primaryId, item.city);
+      renderSharedStreets(primaryId, item.city, metricKey);
       renderOverlap(primaryId, item.city);
       window.location.hash = '#/city/' + primaryId + '/' + item.city;
     });
@@ -3663,6 +3755,7 @@ function renderCitySimilarButtons(primaryId, similarity, activeCityId = '') {
 
   setActiveSimilarCity(normalizedActiveId);
 }
+
 
 function setActiveSimilarCity(partnerId) {
   const container = elements.city.similarList;
@@ -3691,7 +3784,7 @@ function setActiveSimilarCity(partnerId) {
   }
 }
 
-function computeSharedStreetHighlights(primaryId, partnerId, limit = 20) {
+function computeSharedStreetHighlights(primaryId, partnerId, limit = 20, metricKey = (state.cityView?.metricSupported ? state.cityView.metricKey : 'weightedJaccard')) {
   if (!primaryId || !partnerId) return null;
   const primary = state.cityMap.get(primaryId);
   const partner = state.cityMap.get(partnerId);
@@ -3737,19 +3830,32 @@ function computeSharedStreetHighlights(primaryId, partnerId, limit = 20) {
   const partnerKeys = new Set((partner.streets || []).map(item => item.key));
   const intersectionSize = overlaps.length;
   const unionSize = primaryKeys.size + partnerKeys.size - intersectionSize;
+  const normalizedMetric = normalizeMetricKey(metricKey);
+  const similarityScore = getSimilarityMetric(primaryId, partnerId, normalizedMetric);
+  const weightedScore = getSimilarityMetric(primaryId, partnerId, 'weightedJaccard');
 
-  return {
+  const result = {
     city: partnerId,
     cityName: partner.name,
-    weightedJaccard: getSimilarityMetric(primaryId, partnerId, 'weightedJaccard'),
+    weightedJaccard: weightedScore,
     jaccard: unionSize > 0 ? intersectionSize / unionSize : 0,
     intersectionSize,
     unionSize,
     topSharedStreets: overlaps.slice(0, limit)
   };
+
+  if (normalizedMetric === 'inverse_df') {
+    result.inverse_df = similarityScore;
+    result.communityWeight = similarityScore;
+  } else {
+    result.communityWeight = similarityScore;
+  }
+
+  return result;
 }
 
-function renderSharedStreets(primaryId, partnerId) {
+
+function renderSharedStreets(primaryId, partnerId, metricKey = (state.cityView?.metricSupported ? state.cityView.metricKey : 'weightedJaccard')) {
   const container = elements.city.sharedList;
   if (!container) return;
   container.innerHTML = '';
@@ -3758,15 +3864,15 @@ function renderSharedStreets(primaryId, partnerId) {
   setActiveSimilarCity(normalizedPartner);
 
   if (!normalizedPartner) {
-    container.innerHTML = '<p>בחרו עיר להשוואה כדי לראות רחובות משותפים.</p>';
+    container.innerHTML = '<p>לא נמצאו רחובות משותפים להצגה</p>';
     return;
   }
 
   let entry = getSimilarityEntry(primaryId, normalizedPartner);
   if (!entry || !Array.isArray(entry.topSharedStreets) || !entry.topSharedStreets.length) {
-    const fallback = computeSharedStreetHighlights(primaryId, normalizedPartner);
+    const fallback = computeSharedStreetHighlights(primaryId, normalizedPartner, 20, metricKey);
     if (fallback) {
-      entry = entry ? { ...entry, topSharedStreets: fallback.topSharedStreets } : fallback;
+      entry = entry ? { ...entry, ...fallback, topSharedStreets: fallback.topSharedStreets } : fallback;
 
       let primaryMap = state.similarityLookup.get(primaryId);
       if (!primaryMap) {
@@ -3791,7 +3897,7 @@ function renderSharedStreets(primaryId, partnerId) {
   }
 
   if (!entry || !Array.isArray(entry.topSharedStreets) || !entry.topSharedStreets.length) {
-    container.innerHTML = '<p>לא נמצאו רחובות משותפים משמעותיים בין צמד הערים.</p>';
+    container.innerHTML = '<p>לא נמצאו רחובות משותפים משמעותיים בין הערים</p>';
     return;
   }
 
@@ -3821,6 +3927,7 @@ function renderSharedStreets(primaryId, partnerId) {
   });
   container.appendChild(list);
 }
+
 
 function renderOverlap(primaryId, secondaryId) {
   const container = elements.city.overlap;

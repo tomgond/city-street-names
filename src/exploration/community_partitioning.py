@@ -11,6 +11,7 @@ group that currently contains most of the large cities).
 from __future__ import annotations
 
 import argparse
+import csv
 import logging
 import math
 import sys
@@ -30,7 +31,6 @@ if hasattr(sys.stdout, "reconfigure"):
 
 from src.aggregation.build_data import (
     DEFAULT_COMMUNITY_GRAPH_TOP_N,
-    DEFAULT_TOP_NEIGHBOR_PERCENTILE,
     StreetProcessingPipeline,
 )
 
@@ -41,7 +41,6 @@ def build_pipeline_and_similarity(
     csv_path: str,
     similarity_threshold: float,
     top_neighbor_count: int,
-    top_neighbor_percentile: float,
 ) -> Tuple[StreetProcessingPipeline, List[dict], Dict[str, List[dict]], dict]:
     """
     Run the aggregation pipeline just far enough to reuse the existing similarity
@@ -60,7 +59,6 @@ def build_pipeline_and_similarity(
         base_pairs,
         similarity_threshold=similarity_threshold,
         top_neighbor_count=top_neighbor_count,
-        top_neighbor_percentile=top_neighbor_percentile,
     )
     return pipeline, base_pairs, similarity_top, stats
 
@@ -70,7 +68,6 @@ def build_similarity_top(
     base_pairs: Sequence[dict],
     similarity_threshold: float,
     top_neighbor_count: int,
-    top_neighbor_percentile: float,
 ) -> Tuple[Dict[str, List[dict]], dict]:
     """
     Recreate the similarity_top structure from build_data.py so we can tweak
@@ -104,10 +101,8 @@ def build_similarity_top(
 
     raw_edges = sum(len(entries) for entries in top_similarities.values())
 
-    percentile_fraction = max(0.0, min(top_neighbor_percentile / 100.0, 1.0))
     similarity_top: Dict[str, List[dict]] = {}
     retained_edges = 0
-    percentile_thresholds: List[float] = []
 
     for city_code, neighbors in top_similarities.items():
         if not neighbors:
@@ -115,23 +110,23 @@ def build_similarity_top(
         neighbors.sort(key=lambda entry: entry['weightedJaccard'], reverse=True)
 
         keep_count = len(neighbors)
-        if percentile_fraction > 0.0:
-            percentile_limit = max(1, math.ceil(len(neighbors) * percentile_fraction))
-            keep_count = min(keep_count, percentile_limit)
         if top_neighbor_count > 0:
             keep_count = min(keep_count, top_neighbor_count)
 
         trimmed = neighbors[:keep_count]
-        if trimmed:
-            percentile_thresholds.append(trimmed[-1]['weightedJaccard'])
         similarity_top[city_code] = trimmed
         retained_edges += len(trimmed)
+
+    threshold_candidates = [
+        entries[-1]['weightedJaccard']
+        for entries in similarity_top.values()
+        if entries
+    ]
 
     stats = {
         'raw_edges': raw_edges,
         'retained_edges': retained_edges,
-        'effective_threshold': min(percentile_thresholds) if percentile_thresholds else 0.0,
-        'percentile_fraction': percentile_fraction,
+        'effective_threshold': min(threshold_candidates) if threshold_candidates else 0.0,
     }
     return similarity_top, stats
 
@@ -211,13 +206,15 @@ def run_bruteforce_scan(
 ) -> None:
     """
     Explore a predefined grid of parameter combinations for edge weighting and community detection.
-    Only logs aggregated stats (no console prints).
+    Exports aggregated stats to communities.csv
     """
     focus_city_set = set(focus_city_codes)
     raw_city_street_sets: Dict[int, Set[str]] = {
         int(code): set(streets.keys()) for code, streets in pipeline.cities_data.items()
     }
     street_df = {key: len(cities) for key, cities in pipeline.street_to_cities.items()}
+
+    experiments = []
 
     weight_modes = ['weighted_jaccard', 'inverse_df', 'tfidf_cosine', 'binary_cosine']
     min_weights = [0.0, 0.005, 0.01]
@@ -314,14 +311,34 @@ def run_bruteforce_scan(
                                     pipeline.city_names,
                                     focus_city_codes,
                                     sample_limit=0,
-                                    community_limit=5,
+                                    community_limit=6,
                                 )
                                 focus_counts = [
                                     len(set(members) & focus_city_set) for members in communities
                                 ]
-                                focus_repr = ", ".join(
-                                    f"C{i}={count}" for i, count in enumerate(focus_counts) if count > 0
-                                )
+                                top_communities_sorted = sorted(
+                                    enumerate(focus_counts),
+                                    key=lambda x: x[1],
+                                    reverse=True
+                                )[:10]
+                                allocation_parts = []
+                                for comm_idx, count in top_communities_sorted:
+                                    if count > 0:
+                                        allocation_parts.append(f"C{comm_idx}={count}")
+                                focus_repr = ", ".join(allocation_parts) or 'none'
+                                experiments.append({
+                                    'metric': 'weightedJaccard',
+                                    'weight_mode': weight_mode,
+                                    'idf_power': f"{idf_power:.2f}",
+                                    'min_shared': str(min_shared),
+                                    'min_weight': f"{min_weight:.3f}",
+                                    'resolution': f"{resolution:.2f}",
+                                    'max_df': f"{max_df_fraction:.2f}",
+                                    'top_k_rare': str(top_k),
+                                    'communities': str(summary['community_count']),
+                                    'top_6_community_sizes': ','.join(str(s) for s in summary['largest_sizes']),
+                                    'allocation': focus_repr,
+                                })
                                 logger.info(
                                     "SCAN mode=%s idf=%.2f min_w=%.3f min_shared=%d res=%.2f top_k=%d max_df=%.2f -> %d communities, largest=%s, focus_hits: %s",
                                     weight_mode,
@@ -335,6 +352,15 @@ def run_bruteforce_scan(
                                     summary['largest_sizes'],
                                     focus_repr or 'none',
                                 )
+
+    if experiments:
+        with open('communities.csv', 'w', newline='', encoding='utf-8') as csvfile:
+            if experiments:
+                fieldnames = experiments[0].keys()
+                writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+                writer.writeheader()
+                writer.writerows(experiments)
+        logger.info("Exported %d experiments to communities.csv", len(experiments))
 
 
 def build_graph(
@@ -498,12 +524,18 @@ def build_graph(
         if weight_mode == 'inverse_df':
             if not intersection_keys:
                 return 0.0
+            len_a = len(streets_a)
+            len_b = len(streets_b)
+            min_size = min(len_a, len_b)
+            size_diff = abs(len_a - len_b)
+            denominator = min_size + math.sqrt(size_diff) if size_diff > 0 else min_size
+            if denominator <= 0:
+                denominator = 1
             numerator = 0.0
             for key in intersection_keys:
                 df = max(street_df.get(key, 0), 1)
                 numerator += (1.0 / df) ** idf_power
-            denom = max(min(len(streets_a), len(streets_b)), 1)
-            return numerator / denom
+            return numerator / denominator
 
         if weight_mode == 'binary_cosine':
             denom = math.sqrt(len(streets_a) * len(streets_b))
@@ -744,12 +776,6 @@ def main() -> None:
         help='Maximum number of neighbors retained per city when building the similarity graph.',
     )
     parser.add_argument(
-        '--top-percentile',
-        type=float,
-        default=DEFAULT_TOP_NEIGHBOR_PERCENTILE,
-        help='Percentile cap for retained neighbors per city.',
-    )
-    parser.add_argument(
         '--metric',
         choices=['weightedJaccard', 'jaccard'],
         default='weightedJaccard',
@@ -782,7 +808,7 @@ def main() -> None:
     parser.add_argument(
         '--focus-top',
         type=int,
-        default=12,
+        default=100,
         help='How many of the largest cities (by normalized street count) to track when measuring breakup.',
     )
     parser.add_argument(
@@ -907,10 +933,12 @@ def main() -> None:
         help='b term for BM25 weighting when weight-mode=bm25_cosine.',
     )
     parser.add_argument(
-        '--bruteforce-scan',
-        action='store_true',
-        help='Run a predefined scan over edge-weight parameters and exit (suppresses console summaries).',
+        '--no-bruteforce',
+        dest='bruteforce_scan',
+        action='store_false',
+        help='Skip the predefined edge-weight scan (default run performs the scan and exits).',
     )
+    parser.set_defaults(bruteforce_scan=True)
     args = parser.parse_args()
 
     logging.basicConfig(
@@ -923,7 +951,6 @@ def main() -> None:
         csv_path=args.csv,
         similarity_threshold=args.similarity_threshold,
         top_neighbor_count=args.top_neighbors,
-        top_neighbor_percentile=args.top_percentile,
     )
     logger.info(
         "Similarity graph baseline: %d raw edges → %d retained (min per-city weight ≥ %.4f)",

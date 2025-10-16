@@ -56,7 +56,12 @@ After community detection, the script annotates each entry in `similarity_top.js
 
 * `inverse_df`, `binary_cosine`, `tfidf_cosine`: Numeric scores matching the calculation used by `COMMUNITY_WEIGHT_MODE`.
 * `communityWeight`: The metric actually used during detection (one of the above or the legacy Jaccard scores).
-* `community_config.json`: Exported alongside the other datasets with the effective parameters (weight mode, min weight, IDF power, etc.) used during the run. The frontend consumes this to choose default display settings. The file now also records `graphTopLimit`, `neighborPercentile`, `exportNeighborLimit`, and `exportNeighborAverage` so you can see how aggressively the similarity lists were trimmed before shipping to the browser.
+* `community_config.json`: Exported alongside the other datasets with the effective parameters (weight mode, min weight, IDF power, etc.) used during the run. The frontend consumes this to choose default display settings. The file now also records `graphTopLimit`, `exportNeighborLimit`, and `exportNeighborAverage` so you can see how aggressively the similarity lists were trimmed before shipping to the browser.
+* City view similarity charts and buttons read the active backend metric (currently `weightedJaccard` or `inverse_df`). When another mode is selected, the UI surfaces a warning instead of showing mismatched scores.
+
+### Exploration CLI (`src/exploration/community_partitioning.py`)
+
+* The script now runs the predefined bruteforce scan by default and exits after logging the summary. Pass `--no-bruteforce` if you want to skip the scan and proceed directly to interactive experiments.
 
 ### Frontend (`frontend/src/main.js`, `frontend/index.html`)
 
