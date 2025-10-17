@@ -206,7 +206,7 @@ def run_bruteforce_scan(
 ) -> None:
     """
     Explore a predefined grid of parameter combinations for edge weighting and community detection.
-    Exports aggregated stats to communities.csv
+    Exports aggregated stats to communities.csv after each experiment.
     """
     focus_city_set = set(focus_city_codes)
     raw_city_street_sets: Dict[int, Set[str]] = {
@@ -214,7 +214,22 @@ def run_bruteforce_scan(
     }
     street_df = {key: len(cities) for key, cities in pipeline.street_to_cities.items()}
 
-    experiments = []
+    # Prepare CSV file with headers
+    csv_path = 'communities.csv'
+    fieldnames = [
+        'metric', 'weight_mode', 'idf_power', 'min_shared', 'min_weight',
+        'resolution', 'max_df', 'top_k_rare', 'communities_num',
+        'communities_1', 'communities_2', 'communities_3', 'communities_4', 'communities_5', 'communities_6',
+        'top_1_focus_hit_count', 'top_2_focus_hit_count', 'top_3_focus_hit_count', 'top_4_focus_hit_count',
+        'top_5_focus_hit_count', 'top_6_focus_hit_count', 'top_7_focus_hit_count', 'top_8_focus_hit_count',
+        'top_9_focus_hit_count', 'top_10_focus_hit_count',
+        'top_1_streets', 'top_2_streets', 'top_3_streets', 'top_4_streets', 'top_5_streets',
+        'top_6_streets', 'top_7_streets'
+    ]
+
+    with open(csv_path, 'w', newline='', encoding='utf-8') as csvfile:
+        writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+        writer.writeheader()
 
     weight_modes = ['weighted_jaccard', 'inverse_df', 'tfidf_cosine', 'binary_cosine']
     min_weights = [0.0, 0.005, 0.01]
@@ -326,7 +341,61 @@ def run_bruteforce_scan(
                                     if count > 0:
                                         allocation_parts.append(f"C{comm_idx}={count}")
                                 focus_repr = ", ".join(allocation_parts) or 'none'
-                                experiments.append({
+                                top_streets_list = []
+                                max_communities_streets = 7
+                                total_city_count = len(raw_city_street_sets)
+
+                                for comm_idx in range(min(max_communities_streets, len(communities))):
+                                    comm_members = communities[comm_idx]
+                                    community_cities = set(comm_members)
+                                    community_streets = {}
+
+                                    for city in comm_members:
+                                        streets = pipeline.cities_data.get(city, {})
+                                        for street in streets.keys():
+                                            if street in community_streets:
+                                                community_streets[street] += 1
+                                            else:
+                                                community_streets[street] = 1
+
+                                    street_scores = []
+                                    for street, local_count in community_streets.items():
+                                        global_count = street_df.get(street, 0)
+                                        if global_count < 2:  # Skip very rare streets
+                                            continue
+
+                                        tf = local_count
+                                        doc_frequency = global_count
+                                        ratio = total_city_count / doc_frequency if doc_frequency > 0 else 1
+                                        idf = math.log(ratio) if ratio > 1 else 0
+                                        base_score = tf * idf
+
+                                        other_communities = 0
+                                        for other_idx, other_comm in enumerate(communities):
+                                            if other_idx == comm_idx:
+                                                continue
+                                            other_city_ids = set(other_comm)
+                                            for city in community_cities:
+                                                if city in other_city_ids:
+                                                    streets_in_other = pipeline.cities_data.get(city, {})
+                                                    if street in streets_in_other:
+                                                        other_communities += 1
+                                                        break
+                                            if other_communities > 0:
+                                                break
+
+                                        penalty_factor = 1 / (1 + other_communities) if other_communities > 0 else 1
+                                        score = base_score * penalty_factor
+
+                                        street_scores.append((street, score))
+
+                                    street_scores.sort(key=lambda x: x[1], reverse=True)
+                                    top_streets = [street for street, _ in street_scores[:20]]
+                                    top_streets_list.append(', '.join(top_streets))
+
+                                top_sizes = summary['largest_sizes']
+                                max_sizes = 6
+                                exp_dict = {
                                     'metric': 'weightedJaccard',
                                     'weight_mode': weight_mode,
                                     'idf_power': f"{idf_power:.2f}",
@@ -335,10 +404,30 @@ def run_bruteforce_scan(
                                     'resolution': f"{resolution:.2f}",
                                     'max_df': f"{max_df_fraction:.2f}",
                                     'top_k_rare': str(top_k),
-                                    'communities': str(summary['community_count']),
-                                    'top_6_community_sizes': ','.join(str(s) for s in summary['largest_sizes']),
-                                    'allocation': focus_repr,
-                                })
+                                    'communities_num': str(summary['community_count']),
+                                }
+                                # add communities_1 to communities_6
+                                for i in range(1, max_sizes+1):
+                                    exp_dict[f'communities_{i}'] = str(top_sizes[i-1]) if i <= len(top_sizes) else ''
+                                # now for focus
+                                top_focus = top_communities_sorted
+                                max_focus = 10
+                                for i in range(1, max_focus+1):
+                                    if i-1 < len(top_focus):
+                                        comm_idx, count = top_focus[i-1]
+                                        exp_dict[f'top_{i}_focus_hit_count'] = f'C{comm_idx}={count}'
+                                    else:
+                                        exp_dict[f'top_{i}_focus_hit_count'] = ''
+                                # now for streets
+                                for i in range(1, max_communities_streets+1):
+                                    exp_dict[f'top_{i}_streets'] = top_streets_list[i-1] if i <= len(top_streets_list) else ''
+
+                                # Write to CSV immediately after each experiment
+                                with open(csv_path, 'a', newline='', encoding='utf-8') as csvfile:
+                                    writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+                                    writer.writerow(exp_dict)
+                                    print("Wrote to file? {}".format(csv_path))
+
                                 logger.info(
                                     "SCAN mode=%s idf=%.2f min_w=%.3f min_shared=%d res=%.2f top_k=%d max_df=%.2f -> %d communities, largest=%s, focus_hits: %s",
                                     weight_mode,
@@ -352,15 +441,6 @@ def run_bruteforce_scan(
                                     summary['largest_sizes'],
                                     focus_repr or 'none',
                                 )
-
-    if experiments:
-        with open('communities.csv', 'w', newline='', encoding='utf-8') as csvfile:
-            if experiments:
-                fieldnames = experiments[0].keys()
-                writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
-                writer.writeheader()
-                writer.writerows(experiments)
-        logger.info("Exported %d experiments to communities.csv", len(experiments))
 
 
 def build_graph(
