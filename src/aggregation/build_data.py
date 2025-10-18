@@ -35,14 +35,15 @@ MIN_STREETS_FOR_HONOR_GRAPH = 30
 
 # Maximum number of similar neighbors considered during community graph construction
 DEFAULT_COMMUNITY_GRAPH_TOP_N = int(os.environ.get('CITY_SIMILARITY_GRAPH_TOP_N', '0'))
-DEFAULT_EXPORT_NEIGHBOR_COUNT = int(os.environ.get('CITY_SIMILARITY_EXPORT_TOP_N', '35'))
+DEFAULT_EXPORT_NEIGHBOR_COUNT = int(os.environ.get('CITY_SIMILARITY_EXPORT_TOP_N', '40'))
 DEFAULT_COMMUNITY_WEIGHT_MODE = os.environ.get('COMMUNITY_WEIGHT_MODE', 'inverse_df').strip().lower()
-DEFAULT_COMMUNITY_IDF_POWER = float(os.environ.get('COMMUNITY_IDF_POWER', '1.0'))
-DEFAULT_COMMUNITY_MIN_SHARED = int(float(os.environ.get('COMMUNITY_MIN_SHARED', '0')))
-DEFAULT_COMMUNITY_MIN_WEIGHT = float(os.environ.get('COMMUNITY_MIN_WEIGHT', '0.005'))
-DEFAULT_COMMUNITY_RESOLUTION = float(os.environ.get('COMMUNITY_RESOLUTION', '2.4'))
-DEFAULT_COMMUNITY_MAX_DF_FRACTION = float(os.environ.get('COMMUNITY_MAX_DF_FRACTION', '0.20'))
+DEFAULT_COMMUNITY_IDF_POWER = float(os.environ.get('COMMUNITY_IDF_POWER', '1.8'))
+DEFAULT_COMMUNITY_MIN_SHARED = int(float(os.environ.get('COMMUNITY_MIN_SHARED', '0.0')))
+DEFAULT_COMMUNITY_MIN_WEIGHT = float(os.environ.get('COMMUNITY_MIN_WEIGHT', '0.000'))
+DEFAULT_COMMUNITY_RESOLUTION = float(os.environ.get('COMMUNITY_RESOLUTION', '1.2'))
+DEFAULT_COMMUNITY_MAX_DF_FRACTION = float(os.environ.get('COMMUNITY_MAX_DF_FRACTION', '0.0'))
 DEFAULT_INVERSE_DF_DENOMINATOR_MODE = os.environ.get('INVERSE_DF_DENOMINATOR_MODE', 'log_penalty').strip().lower()
+
 
 # Set up logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
