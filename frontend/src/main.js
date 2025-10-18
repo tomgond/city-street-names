@@ -1348,6 +1348,17 @@ function prepareCityHonorGraph(raw) {
     });
   }
 
+  // Enrich nodes with street counts for proper scaling
+  preparedNodes.forEach(node => {
+    if (!node) return;
+    const cityData = state.cityMap.get(String(node.id));
+    if (cityData) {
+      node.streetCount = cityData.streetCount || 0;
+    } else {
+      node.streetCount = 0;
+    }
+  });
+
   const preparedGraph = {
     nodes: preparedNodes,
     links: preparedLinks,
@@ -2078,38 +2089,51 @@ function renderNetworkGraph(target, options = {}) {
   const communityKeyFor = node =>
     node.community === null || node.community === undefined ? '__other__' : String(node.community);
 
-  let communityCenters = null;
-  if (layoutMode === 'community') {
-    const communityKeys = Array.from(new Set(nodes.map(node => communityKeyFor(node))));
-    const safeLength = Math.max(communityKeys.length, 1);
-    communityKeys.sort((a, b) => {
-      if (a === '__other__') return 1;
-      if (b === '__other__') return -1;
-      const numA = Number(a);
-      const numB = Number(b);
-      if (!Number.isNaN(numA) && !Number.isNaN(numB)) {
-        return numA - numB;
-      }
-      return String(a).localeCompare(String(b));
+let communityCenters = null;
+if (layoutMode === 'community') {
+  // Group nodes by community and sort communities by descending size
+  const communityGroups = {};
+  nodes.forEach(node => {
+    const key = communityKeyFor(node);
+    if (!communityGroups[key]) communityGroups[key] = [];
+    communityGroups[key].push(node);
+  });
+
+  const communityList = Object.entries(communityGroups)
+    .map(([key, nodesInGroup]) => ({
+      key,
+      size: nodesInGroup.length,
+      totalWeight: nodesInGroup.reduce((sum, node) => sum + Math.log10(Math.max(node.streetCount, 10)), 0)
+    }))
+    .sort((a, b) => b.size - a.size); // Sort by size descending
+
+  const totalCommunities = communityList.length;
+  if (totalCommunities === 0) {
+    communityCenters = new Map();
+  } else {
+    // Arrange communities in a grid, but allocate more space to larger communities
+    const baseColumns = Math.ceil(Math.sqrt(totalCommunities));
+    const baseRows = Math.ceil(totalCommunities / baseColumns);
+    const baseCellWidth = (width - margin * 2) / baseColumns;
+    const baseCellHeight = (resolvedHeight - margin * 2) / baseRows;
+
+    communityCenters = new Map();
+    communityList.forEach((community, index) => {
+      // Allocate space proportionally to community size
+      const sizeFactor = Math.sqrt(community.size / (communityList[0].size || 1));
+      const cellWidth = Math.max(baseCellWidth * 0.5, baseCellWidth * (0.5 + 0.5 * sizeFactor));
+      const cellHeight = Math.max(baseCellHeight * 0.5, baseCellHeight * (0.5 + 0.5 * sizeFactor));
+
+      const col = index % baseColumns;
+      const row = Math.floor(index / baseColumns);
+
+      const x = margin + (col + 0.5) * baseCellWidth;
+      const y = margin + (row + 0.5) * baseCellHeight;
+
+      communityCenters.set(community.key, { x, y });
     });
-    const columns = Math.ceil(Math.sqrt(safeLength));
-    const rows = Math.ceil(safeLength / Math.max(columns, 1));
-    const cellWidth = (width - margin * 2) / Math.max(columns, 1);
-    const cellHeight = (resolvedHeight - margin * 2) / Math.max(rows, 1);
-    communityCenters = new Map(
-      communityKeys.map((key, index) => {
-        const column = index % Math.max(columns, 1);
-        const row = Math.floor(index / Math.max(columns, 1));
-        return [
-          key,
-          {
-            x: margin + cellWidth * (column + 0.5),
-            y: margin + cellHeight * (row + 0.5)
-          }
-        ];
-      })
-    );
   }
+}
 
   const svg = d3
     .select(container)
@@ -2144,13 +2168,19 @@ function renderNetworkGraph(target, options = {}) {
     communityScale ? communityScale(node.community) : fallbackScale(node.streetCount);
 
   const chargeStrength = layoutMode === 'community' ? -70 : -90;
-  const axisStrength = layoutMode === 'community' ? 0.18 : 0.06;
+  const axisStrength = layoutMode === 'community' ? 0.28 : 0.06; // Increased to strengthen community attraction
   const collisionPadding = layoutMode === 'community' ? 10 : 8;
   const linkDistance = layoutMode === 'community'
     ? (d => Math.max(55, 180 - d.weight * 820))
     : (d => Math.max(70, 200 - d.weight * 880));
   const linkStrength = layoutMode === 'community'
-    ? (d => Math.max(0.22, d.weight * 2.1))
+    ? (d => {
+        const sourceCommunity = d.source?.community;
+        const targetCommunity = d.target?.community;
+        const isIntraCommunity = sourceCommunity !== null && targetCommunity !== null && sourceCommunity === targetCommunity;
+        const baseStrength = Math.max(0.22, d.weight * 2.1);
+        return isIntraCommunity ? baseStrength : baseStrength * 0.4; // Weaken inter-community links
+      })
     : (d => Math.max(0.18, d.weight * 1.9));
   const xForce = layoutMode === 'community'
     ? d3.forceX(node => {
@@ -2707,13 +2737,27 @@ function renderCityChainSequence(container, entry, fallbackMessage) {
 }
 
 function getHonorNodeRadius(node) {
-  if (!node) return 18;
-  const totalStreets = Number(node.honorStreetOut || 0) + Number(node.honorStreetIn || 0);
-  if (node.aggregated) {
-    const fallback = node.aggregateSize || 1;
-    return 16 + Math.sqrt(totalStreets || fallback) * 2.4;
+  if (!node) return 12;
+
+  // Scale based on number of streets instead of honor counts
+  const streetCount = Number(node?.streetCount || 0);
+  if (streetCount > 0) {
+    const baseRadius = node?.aggregated ? 5 : 6;
+    const scale = node?.aggregated ? 1.2 : 2.0;
+    const radius = baseRadius + Math.sqrt(streetCount) * scale;
+    return Math.max(baseRadius, Math.min(radius, 32));
   }
-  return 18 + Math.sqrt(totalStreets || 1) * 3;
+
+  // Fallback to honor counts if street count not available
+  const outgoing = Number(node?.honorStreetOut || 0);
+  const incoming = Number(node?.honorStreetIn || 0);
+  const aggregateFallback = Number(node?.aggregateSize || 0);
+  const effectiveTotal = Math.max(outgoing + incoming, aggregateFallback, 1);
+  const baseRadius = node?.aggregated ? 7 : 8;
+  const scale = node?.aggregated ? 1.1 : 1.6;
+  const radius = baseRadius + Math.sqrt(effectiveTotal) * scale;
+
+  return Math.max(baseRadius, Math.min(radius, 18));
 }
 
 function renderCityHonorGraph(force = false) {
@@ -2733,17 +2777,66 @@ function renderCityHonorGraph(force = false) {
   const width = Math.max(bounds.width || container.clientWidth || 0, 720);
   const height = Math.max(bounds.height || 0, 520);
 
+  let rootStyles = null;
+  const getThemeVar = (name, fallback) => {
+    try {
+      if (!rootStyles) {
+        const root = document.documentElement || null;
+        if (!root) return fallback;
+        rootStyles = window.getComputedStyle(root);
+      }
+      const value = rootStyles.getPropertyValue(name);
+      return value && value.trim() ? value.trim() : fallback;
+    } catch (error) {
+      return fallback;
+    }
+  };
+
+  const accent = getThemeVar('--accent', '#f0a45d');
+  const accentStrong = getThemeVar('--accent-strong', '#e3743c');
+  const danger = getThemeVar('--danger', '#d16666');
+  const textColor = getThemeVar('--text', '#2e2216');
+  const muted = getThemeVar('--muted', '#7b6855');
+  const card = getThemeVar('--card', 'rgba(255, 255, 255, 0.82)');
+
+  const colors = {
+    background: card || 'rgba(255, 255, 255, 0.82)',
+    regularFill: 'rgba(244, 216, 183, 0.92)',
+    regularStroke: muted || '#7b6855',
+    pathFill: accentStrong,
+    pathStroke: 'rgba(142, 68, 24, 0.85)',
+    cycleFill: danger,
+    cycleStroke: 'rgba(148, 61, 61, 0.9)',
+    bothFill: accent,
+    bothStroke: 'rgba(188, 122, 48, 0.95)',
+    aggregateFill: 'rgba(167, 145, 123, 0.72)',
+    aggregateStroke: 'rgba(120, 93, 70, 0.92)',
+    edgeDefault: 'rgba(224, 192, 160, 0.75)',
+    edgePath: accentStrong,
+    edgeCycle: danger,
+    edgeBoth: accent,
+    labelFill: textColor || '#2e2216',
+    labelStroke: 'rgba(255, 248, 237, 0.85)',
+    shadow: 'rgba(200, 164, 121, 0.32)'
+  };
+
   const svg = d3
     .select(container)
     .append('svg')
     .attr('viewBox', `0 0 ${width} ${height}`)
-    .attr('preserveAspectRatio', 'xMidYMid meet');
+    .attr('preserveAspectRatio', 'xMidYMid meet')
+    .classed('honor-graph', true)
+    .style('background', colors.background)
+    .style('border-radius', '20px')
+    .style('box-shadow', 'var(--shadow)')
+    .style('overflow', 'visible');
 
   const defs = svg.append('defs');
   const markerConfigs = [
-    { id: 'chain-arrow', color: 'rgba(148,163,255,0.65)' },
-    { id: 'chain-arrow-path', color: '#22d3ee' },
-    { id: 'chain-arrow-cycle', color: '#facc15' }
+    { id: 'chain-arrow', color: colors.edgeDefault },
+    { id: 'chain-arrow-path', color: colors.edgePath },
+    { id: 'chain-arrow-cycle', color: colors.edgeCycle },
+    { id: 'chain-arrow-shared', color: colors.edgeBoth }
   ];
 
   markerConfigs.forEach(config => {
@@ -2828,6 +2921,15 @@ function renderCityHonorGraph(force = false) {
   const nodeLookup = new Map(nodes.map(node => [String(node.id), node]));
 
   const outboundMap = new Map();
+  const neighborMap = new Map();
+  const ensureNeighborSet = id => {
+    const key = String(id);
+    if (!neighborMap.has(key)) {
+      neighborMap.set(key, new Set());
+    }
+    return neighborMap.get(key);
+  };
+
   links.forEach(link => {
     const sourceId = String(link.source);
     const targetId = String(link.target);
@@ -2835,6 +2937,8 @@ function renderCityHonorGraph(force = false) {
       outboundMap.set(sourceId, []);
     }
     outboundMap.get(sourceId).push(targetId);
+    ensureNeighborSet(sourceId).add(targetId);
+    ensureNeighborSet(targetId).add(sourceId);
   });
 
   const stats = graphData.stats || {};
@@ -2881,29 +2985,70 @@ function renderCityHonorGraph(force = false) {
     return unique;
   };
 
-  const longestPathCities = computeUniqueSequence(stats.longestPath?.cities);
-  if (longestPathCities.length) {
-    const marginX = Math.min(140, width * 0.14);
-    const span = Math.max(width - marginX * 2, 320);
-    const step = longestPathCities.length > 1 ? span / (longestPathCities.length - 1) : 0;
-    longestPathCities.forEach((cityId, index) => {
-      const x = marginX + step * index;
-      const y = Math.max(80, height * 0.28);
-      assignAnchor(cityId, x, y, 1.8, 0);
+  // CHANGE ORDER: Start with cycle, then path, then regular nodes
+  const longestCycleCities = computeUniqueSequence(stats.longestCycle?.cities);
+  let cycleLayout = null;
+  if (longestCycleCities.length) {
+    const centerX = width / 2;
+    const minRadius = Math.max(110, Math.min(width, height) * 0.22);
+    const maxRadius = Math.max(
+      minRadius,
+      Math.min(Math.min(width, height) * 0.4, Math.min(width, height) / 2 - 90)
+    );
+    const desiredRadius = Math.min(width, height) * 0.26 + longestCycleCities.length * 4;
+    const radius = Math.max(minRadius, Math.min(maxRadius, desiredRadius));
+    const lowerBoundY = radius + 90;
+    const upperBoundY = Math.max(lowerBoundY, height - radius - 160);
+    let centerY = Math.min(height * 0.45, upperBoundY);
+    centerY = Math.max(lowerBoundY, centerY);
+
+    cycleLayout = { centerX, centerY, radius };
+
+    longestCycleCities.forEach((cityId, index) => {
+      const angle =
+        longestCycleCities.length === 1
+          ? -Math.PI / 2
+          : (index / longestCycleCities.length) * Math.PI * 2;
+      const x = centerX + Math.cos(angle) * radius;
+      const y = centerY + Math.sin(angle) * radius;
+      assignAnchor(cityId, x, y, 2.4, 0);
     });
   }
 
-  const longestCycleCities = computeUniqueSequence(stats.longestCycle?.cities);
-  if (longestCycleCities.length) {
-    const centerX = width / 2;
-    const centerY = Math.min(height * 0.7, height - 160);
-    const baseRadius = Math.min(width, height) * 0.24 + longestCycleCities.length * 4;
-    longestCycleCities.forEach((cityId, index) => {
-      const angle = (index / longestCycleCities.length) * Math.PI * 2;
-      const x = centerX + Math.cos(angle) * baseRadius;
-      const y = centerY + Math.sin(angle) * baseRadius * 0.55;
-      assignAnchor(cityId, x, y, 1.4, 1);
-    });
+  const longestPathCities = computeUniqueSequence(stats.longestPath?.cities);
+  if (longestPathCities.length) {
+    if (cycleLayout) {
+      const { centerX, centerY, radius: cycleRadius } = cycleLayout;
+      const arcStart = Math.PI * 1.05;
+      const arcEnd = Math.PI * 1.95;
+      const step = longestPathCities.length > 1 ? (arcEnd - arcStart) / (longestPathCities.length - 1) : 0;
+      const availableDown = Math.max(120, height - centerY - 60);
+      const outerGap = Math.max(90, Math.min(180, cycleRadius * 0.6));
+      const minRadius = Math.min(cycleRadius + 90, availableDown);
+      const desiredRadius = Math.min(cycleRadius + outerGap, availableDown);
+      let pathRadius = Math.max(minRadius, desiredRadius);
+      pathRadius = Math.min(pathRadius, availableDown);
+      if (!Number.isFinite(pathRadius) || pathRadius <= cycleRadius) {
+        pathRadius = Math.min(availableDown, cycleRadius + 80);
+      }
+
+      longestPathCities.forEach((cityId, index) => {
+        const angle = arcStart + step * index;
+        const x = centerX + Math.cos(angle) * pathRadius;
+        const y = centerY + Math.sin(angle) * pathRadius;
+        const strength = layoutAnchors.has(String(cityId)) ? 1.4 : 1.9;
+        assignAnchor(cityId, x, y, strength, 1);
+      });
+    } else {
+      const marginX = Math.min(140, width * 0.16);
+      const span = Math.max(width - marginX * 2, 320);
+      const step = longestPathCities.length > 1 ? span / (longestPathCities.length - 1) : 0;
+      const baseY = Math.max(140, Math.min(height - 140, height * 0.42));
+      longestPathCities.forEach((cityId, index) => {
+        const x = marginX + step * index;
+        assignAnchor(cityId, x, baseY, 1.8, 1);
+      });
+    }
   }
 
   const propagationQueue = Array.from(layoutAnchors.entries()).map(([id, anchor]) => ({
@@ -2978,7 +3123,11 @@ function renderCityHonorGraph(force = false) {
     }
   });
 
-  const linkGroup = svg.append('g').attr('class', 'chain-links');
+  const linkGroup = svg
+    .append('g')
+    .attr('class', 'chain-links')
+    .attr('stroke-linecap', 'round')
+    .attr('stroke-linejoin', 'round');
   const nodeGroup = svg.append('g').attr('class', 'chain-nodes');
 
   const linkSelection = linkGroup
@@ -2994,6 +3143,21 @@ function renderCityHonorGraph(force = false) {
       if (d.aggregated) classes.push('is-aggregate');
       return classes.join(' ');
     })
+    .attr('stroke', d => {
+      const key = makeEdgeKey(d._source, d._target);
+      if (d.aggregated) return 'rgba(213, 185, 153, 0.58)';
+      if (pathEdgeKeys.has(key) && cycleEdgeKeys.has(key)) return colors.edgeBoth;
+      if (pathEdgeKeys.has(key)) return colors.edgePath;
+      if (cycleEdgeKeys.has(key)) return colors.edgeCycle;
+      return colors.edgeDefault;
+    })
+    .attr('stroke-opacity', d => {
+      const key = makeEdgeKey(d._source, d._target);
+      if (d.aggregated) return 0.65;
+      if (pathEdgeKeys.has(key) && cycleEdgeKeys.has(key)) return 0.95;
+      if (pathEdgeKeys.has(key) || cycleEdgeKeys.has(key)) return 0.92;
+      return 0.75;
+    })
     .attr('stroke-width', d => {
       const count = Number(d.streetCount || 0);
       const fallback = Array.isArray(d.streets) ? d.streets.length : 1;
@@ -3001,6 +3165,7 @@ function renderCityHonorGraph(force = false) {
     })
     .attr('marker-end', d => {
       const key = makeEdgeKey(d._source, d._target);
+      if (pathEdgeKeys.has(key) && cycleEdgeKeys.has(key)) return 'url(#chain-arrow-shared)';
       if (pathEdgeKeys.has(key)) return 'url(#chain-arrow-path)';
       if (cycleEdgeKeys.has(key)) return 'url(#chain-arrow-cycle)';
       return 'url(#chain-arrow)';
@@ -3059,29 +3224,126 @@ function renderCityHonorGraph(force = false) {
 
   nodeSelection
     .append('circle')
-    .attr('r', d => getHonorNodeRadius(d));
+    .attr('r', d => getHonorNodeRadius(d))
+    .attr('fill', d => {
+      const isPath = pathNodeIds.has(d.id);
+      const isCycle = cycleNodeIds.has(d.id);
+      if (d.aggregated) return colors.aggregateFill;
+      if (isPath && isCycle) return colors.bothFill;
+      if (isPath) return colors.pathFill;
+      if (isCycle) return colors.cycleFill;
+      return colors.regularFill;
+    })
+    .attr('stroke', d => {
+      const isPath = pathNodeIds.has(d.id);
+      const isCycle = cycleNodeIds.has(d.id);
+      if (d.aggregated) return colors.aggregateStroke;
+      if (isPath && isCycle) return colors.bothStroke;
+      if (isPath) return colors.pathStroke;
+      if (isCycle) return colors.cycleStroke;
+      return colors.regularStroke;
+    })
+    .attr('stroke-width', 2.8)
+    .attr('opacity', d => (d.aggregated ? 0.88 : 1))
+    .style('filter', `drop-shadow(0 14px 24px ${colors.shadow})`);
 
   nodeSelection
     .append('text')
     .attr('text-anchor', 'middle')
     .attr('dominant-baseline', 'middle')
-    .text(d => d.name || d.displayName || d.id);
+    .text(d => d.name || d.displayName || d.id)
+    .attr('fill', d => (d.aggregated ? 'rgba(126, 104, 83, 0.9)' : colors.labelFill))
+    .attr('font-weight', 600)
+    .attr('font-size', d => (d.aggregated ? '10px' : '11px'))
+    .style('paint-order', 'stroke')
+    .attr('stroke', colors.labelStroke)
+    .attr('stroke-width', 3)
+    .style('stroke-linejoin', 'round')
+    .style('pointer-events', 'none');
 
   nodeSelection.append('title').text(d => {
     const honorsOut = d.honorsOut || 0;
     const honorsIn = d.honorsIn || 0;
     const streetOut = d.honorStreetOut || 0;
     const streetIn = d.honorStreetIn || 0;
+    const status = [];
+    if (pathNodeIds.has(d.id)) status.push('במסלול הארוך ביותר');
+    if (cycleNodeIds.has(d.id)) status.push('במעגל הארוך ביותר');
+    const statusText = status.length ? `\nסטטוס: ${status.join(', ')}` : '';
     if (d.aggregated) {
       const targetName = state.cityMap.get(d.aggregateTarget)?.name || state.cityHonors.nodesById.get(d.aggregateTarget)?.name || d.aggregateTarget;
       const size = d.aggregateSize || (Array.isArray(d.aggregateCityNames) ? d.aggregateCityNames.length : 0) || 1;
       const label = size === 1 ? 'עיר אחת' : `${size} ערים`;
       const names = Array.isArray(d.aggregateCityNames) ? d.aggregateCityNames.slice(0, 6).join(', ') : '';
       return names
-        ? `${label} שמנציחות את ${targetName}\n${names}`
-        : `${label} שמנציחות את ${targetName}`;
+        ? `${label} שמנציחות את ${targetName}\n${names}${statusText}`
+        : `${label} שמנציחות את ${targetName}${statusText}`;
     }
-    return `${d.name || d.id}\nמנציחה ${honorsOut} ערים (${streetOut} שמות רחובות)\nמונצחת ב-${honorsIn} ערים (${streetIn} שמות)`;
+    return `${d.name || d.id}\nמנציחה ${honorsOut} ערים (${streetOut} שמות רחובות)\nמונצחת ב-${honorsIn} ערים (${streetIn} שמות)${statusText}`;
+  });
+
+  let setHighlight = () => {};
+  const emptyNeighborSet = new Set();
+  let activeHighlightId = '';
+  let dragActive = false;
+  let draggingNodeId = '';
+
+  setHighlight = focusId => {
+    const key = focusId ? String(focusId) : '';
+    if (activeHighlightId === key) return;
+    activeHighlightId = key;
+
+    const neighbors = key ? neighborMap.get(key) || emptyNeighborSet : null;
+
+    nodeSelection
+      .classed('is-focused', d => !!key && String(d.id) === key)
+      .classed('is-neighbor', d => !!key && neighbors && neighbors.has(String(d.id)))
+      .classed('is-dimmed', d => {
+        if (!key) return false;
+        const id = String(d.id);
+        if (id === key) return false;
+        return !(neighbors && neighbors.has(id));
+      });
+
+    linkSelection
+      .classed('is-focused', d => !!key && (String(d._source) === key || String(d._target) === key))
+      .classed('is-neighbor', d => {
+        if (!key || !neighbors) return false;
+        const sourceId = String(d._source);
+        const targetId = String(d._target);
+        return neighbors.has(sourceId) || neighbors.has(targetId);
+      })
+      .classed('is-dimmed', d => {
+        if (!key) return false;
+        const sourceId = String(d._source);
+        const targetId = String(d._target);
+        if (sourceId === key || targetId === key) return false;
+        if (neighbors && (neighbors.has(sourceId) || neighbors.has(targetId))) return false;
+        return true;
+      });
+  };
+
+  nodeSelection
+    .on('mouseenter', (event, d) => {
+      setHighlight(d?.id);
+    })
+    .on('mouseleave', (event, d) => {
+      if (dragActive) {
+        return;
+      }
+      const nextNode =
+        event.relatedTarget && typeof event.relatedTarget.closest === 'function'
+          ? event.relatedTarget.closest('.chain-node')
+          : null;
+      if (nextNode) {
+        return;
+      }
+      setHighlight(null);
+    });
+
+  svg.on('mouseleave', () => {
+    if (dragActive) return;
+    setHighlight(null);
   });
 
   const resolveNode = nodeRef => {
@@ -3136,6 +3398,12 @@ function renderCityHonorGraph(force = false) {
     .drag()
     .on('start', event => {
       const node = clampNodeToBounds(event.subject, width, height, 40);
+      dragActive = true;
+      draggingNodeId =
+        node && node.id !== undefined && node.id !== null ? String(node.id) : '';
+      if (draggingNodeId) {
+        setHighlight(draggingNodeId);
+      }
       node.fx = node.x;
       node.fy = node.y;
       node.vx = 0;
@@ -3161,6 +3429,8 @@ function renderCityHonorGraph(force = false) {
       node.fy = node.y;
       node.vx = 0;
       node.vy = 0;
+      dragActive = false;
+      draggingNodeId = '';
       if (node._layoutAnchor) {
         node._layoutAnchor.x = node.x;
         node._layoutAnchor.y = node.y;

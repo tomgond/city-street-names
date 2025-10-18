@@ -1179,55 +1179,65 @@ button:disabled {
   transition: stroke 0.2s ease;
 }
 
-.chain-link.is-path {
-  stroke: rgba(227, 147, 86, 0.95);
-}
-
-.chain-link.is-cycle {
-  stroke: rgba(214, 141, 59, 0.95);
+.chain-link {
+  transition: opacity 0.2s ease;
 }
 
 .chain-link.is-aggregate {
   stroke-dasharray: 4 2;
-  stroke: rgba(226, 195, 155, 0.6);
+}
+
+.chain-link.is-dimmed {
+  opacity: 0.18;
+}
+
+.chain-link.is-neighbor {
+  opacity: 0.82;
+}
+
+.chain-link.is-focused {
+  opacity: 1;
 }
 
 .chain-node {
   cursor: grab;
+  transition: opacity 0.22s ease;
 }
 
 .chain-node circle {
-  fill: rgba(255, 236, 209, 0.95);
-  stroke: rgba(226, 195, 155, 0.9);
-  stroke-width: 1.6px;
+  transition: stroke-width 0.2s ease;
+}
+
+.chain-node.is-focused {
+  opacity: 1;
+}
+
+.chain-node.is-focused circle {
+  stroke-width: 3.2px;
+}
+
+.chain-node.is-neighbor {
+  opacity: 0.94;
+}
+
+.chain-node.is-dimmed {
+  opacity: 0.24;
 }
 
 .chain-node.is-aggregate circle {
-  fill: rgba(249, 213, 172, 0.5);
-  stroke: rgba(230, 174, 114, 0.8);
   stroke-dasharray: 5 3;
 }
 
-.chain-node.is-aggregate text {
-  font-size: 0.72rem;
-  fill: rgba(126, 104, 83, 0.9);
-}
-
-.chain-node.is-path circle {
-  stroke: rgba(227, 147, 86, 0.95);
-  stroke-width: 2.4px;
-}
-
-.chain-node.is-cycle circle {
-  stroke: rgba(214, 141, 59, 0.95);
-  stroke-width: 2.4px;
-}
-
 .chain-node text {
-  font-size: 0.85rem;
+  font-size: 11px;
   font-weight: 600;
   fill: var(--text);
   pointer-events: none;
+}
+
+.chain-node.is-aggregate text {
+  font-size: 10px;
+  fill: rgba(126, 104, 83, 0.9);
 }
 
 .chain-intro p {
