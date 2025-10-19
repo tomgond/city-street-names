@@ -985,6 +985,20 @@ button:disabled {
   text-align: center;
 }
 
+.footer {
+  background: var(--card);
+  border: 1px solid var(--card-border);
+  border-radius: 20px;
+  padding: clamp(1.4rem, 3vw, 2rem);
+  margin: clamp(1.5rem, 4vw, 2rem);
+  box-shadow: var(--shadow);
+  backdrop-filter: blur(4px);
+  text-align: center;
+  font-size: 0.85rem;
+  color: var(--muted);
+  line-height: 1.5;
+}
+
 .loading-overlay {
   position: fixed;
   inset: 0;
