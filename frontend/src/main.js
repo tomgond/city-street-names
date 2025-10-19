@@ -2089,51 +2089,51 @@ function renderNetworkGraph(target, options = {}) {
   const communityKeyFor = node =>
     node.community === null || node.community === undefined ? '__other__' : String(node.community);
 
-let communityCenters = null;
-if (layoutMode === 'community') {
-  // Group nodes by community and sort communities by descending size
-  const communityGroups = {};
-  nodes.forEach(node => {
-    const key = communityKeyFor(node);
-    if (!communityGroups[key]) communityGroups[key] = [];
-    communityGroups[key].push(node);
-  });
-
-  const communityList = Object.entries(communityGroups)
-    .map(([key, nodesInGroup]) => ({
-      key,
-      size: nodesInGroup.length,
-      totalWeight: nodesInGroup.reduce((sum, node) => sum + Math.log10(Math.max(node.streetCount, 10)), 0)
-    }))
-    .sort((a, b) => b.size - a.size); // Sort by size descending
-
-  const totalCommunities = communityList.length;
-  if (totalCommunities === 0) {
-    communityCenters = new Map();
-  } else {
-    // Arrange communities in a grid, but allocate more space to larger communities
-    const baseColumns = Math.ceil(Math.sqrt(totalCommunities));
-    const baseRows = Math.ceil(totalCommunities / baseColumns);
-    const baseCellWidth = (width - margin * 2) / baseColumns;
-    const baseCellHeight = (resolvedHeight - margin * 2) / baseRows;
-
-    communityCenters = new Map();
-    communityList.forEach((community, index) => {
-      // Allocate space proportionally to community size
-      const sizeFactor = Math.sqrt(community.size / (communityList[0].size || 1));
-      const cellWidth = Math.max(baseCellWidth * 0.5, baseCellWidth * (0.5 + 0.5 * sizeFactor));
-      const cellHeight = Math.max(baseCellHeight * 0.5, baseCellHeight * (0.5 + 0.5 * sizeFactor));
-
-      const col = index % baseColumns;
-      const row = Math.floor(index / baseColumns);
-
-      const x = margin + (col + 0.5) * baseCellWidth;
-      const y = margin + (row + 0.5) * baseCellHeight;
-
-      communityCenters.set(community.key, { x, y });
+  let communityCenters = null;
+  if (layoutMode === 'community') {
+    // Group nodes by community and sort communities by descending size
+    const communityGroups = {};
+    nodes.forEach(node => {
+      const key = communityKeyFor(node);
+      if (!communityGroups[key]) communityGroups[key] = [];
+      communityGroups[key].push(node);
     });
+
+    const communityList = Object.entries(communityGroups)
+      .map(([key, nodesInGroup]) => ({
+        key,
+        size: nodesInGroup.length,
+        totalWeight: nodesInGroup.reduce((sum, node) => sum + Math.log10(Math.max(node.streetCount, 10)), 0)
+      }))
+      .sort((a, b) => b.size - a.size); // Sort by size descending
+
+    const totalCommunities = communityList.length;
+    if (totalCommunities === 0) {
+      communityCenters = new Map();
+    } else {
+      // Arrange communities in a grid, but allocate more space to larger communities
+      const baseColumns = Math.ceil(Math.sqrt(totalCommunities));
+      const baseRows = Math.ceil(totalCommunities / baseColumns);
+      const baseCellWidth = (width - margin * 2) / baseColumns;
+      const baseCellHeight = (resolvedHeight - margin * 2) / baseRows;
+
+      communityCenters = new Map();
+      communityList.forEach((community, index) => {
+        // Allocate space proportionally to community size
+        const sizeFactor = Math.sqrt(community.size / (communityList[0].size || 1));
+        const cellWidth = Math.max(baseCellWidth * 0.5, baseCellWidth * (0.5 + 0.5 * sizeFactor));
+        const cellHeight = Math.max(baseCellHeight * 0.5, baseCellHeight * (0.5 + 0.5 * sizeFactor));
+
+        const col = index % baseColumns;
+        const row = Math.floor(index / baseColumns);
+
+        const x = margin + (col + 0.5) * baseCellWidth;
+        const y = margin + (row + 0.5) * baseCellHeight;
+
+        communityCenters.set(community.key, { x, y });
+      });
+    }
   }
-}
 
   const svg = d3
     .select(container)
@@ -2175,12 +2175,12 @@ if (layoutMode === 'community') {
     : (d => Math.max(70, 200 - d.weight * 880));
   const linkStrength = layoutMode === 'community'
     ? (d => {
-        const sourceCommunity = d.source?.community;
-        const targetCommunity = d.target?.community;
-        const isIntraCommunity = sourceCommunity !== null && targetCommunity !== null && sourceCommunity === targetCommunity;
-        const baseStrength = Math.max(0.22, d.weight * 2.1);
-        return isIntraCommunity ? baseStrength : baseStrength * 0.4; // Weaken inter-community links
-      })
+      const sourceCommunity = d.source?.community;
+      const targetCommunity = d.target?.community;
+      const isIntraCommunity = sourceCommunity !== null && targetCommunity !== null && sourceCommunity === targetCommunity;
+      const baseStrength = Math.max(0.22, d.weight * 2.1);
+      return isIntraCommunity ? baseStrength : baseStrength * 0.4; // Weaken inter-community links
+    })
     : (d => Math.max(0.18, d.weight * 1.9));
   const xForce = layoutMode === 'community'
     ? d3.forceX(node => {
@@ -2435,14 +2435,14 @@ function renderGraphCommunityLegend({ nodes = [], communityScale } = {}) {
 
   const communities = Array.isArray(nodes)
     ? Array.from(
-        new Set(
-          nodes
-            .map(node =>
-              typeof node.community === 'number' && Number.isFinite(node.community) ? node.community : null
-            )
-            .filter(value => value !== null)
-        )
-      ).sort((a, b) => a - b)
+      new Set(
+        nodes
+          .map(node =>
+            typeof node.community === 'number' && Number.isFinite(node.community) ? node.community : null
+          )
+          .filter(value => value !== null)
+      )
+    ).sort((a, b) => a - b)
     : [];
 
   if (!communityScale || typeof communityScale !== 'function' || communities.length === 0) {
@@ -2472,14 +2472,6 @@ function renderGraphCommunityLegend({ nodes = [], communityScale } = {}) {
       if (totalCities > 0) {
         metaParts.push(`${NUMBER_FORMAT.format(totalCities)} ערים`);
       }
-      if (totalUnique > 0) {
-        const uniqueLabel = totalUnique > 20
-          ? `מתוך ${NUMBER_FORMAT.format(totalUnique)} רחובות ייחודיים`
-          : `${NUMBER_FORMAT.format(totalUnique)} רחובות ייחודיים`;
-        metaParts.push(uniqueLabel);
-      } else {
-        metaParts.push('אין רחובות ייחודיים');
-      }
       const metaHtml = metaParts.length
         ? `<span class="legend-community-meta">${metaParts.join(' · ')}</span>`
         : '';
@@ -2497,13 +2489,13 @@ function renderGraphCommunityLegend({ nodes = [], communityScale } = {}) {
               </thead>
               <tbody>
                 ${topStreets
-                  .map(street => {
-                    const name = escapeHtml(street.display || street.key || '');
-                    const localCount = NUMBER_FORMAT.format(Number(street.cityCount || 0));
-                    const globalCount = NUMBER_FORMAT.format(Number(street.globalCityCount || 0));
-                    return `<tr><th scope="row">${name}</th><td>${localCount}</td><td>${globalCount}</td></tr>`;
-                  })
-                  .join('')}
+          .map(street => {
+            const name = escapeHtml(street.display || street.key || '');
+            const localCount = NUMBER_FORMAT.format(Number(street.cityCount || 0));
+            const globalCount = NUMBER_FORMAT.format(Number(street.globalCityCount || 0));
+            return `<tr><th scope="row">${name}</th><td>${localCount}</td><td>${globalCount}</td></tr>`;
+          })
+          .join('')}
               </tbody>
             </table>
           `
@@ -2702,7 +2694,6 @@ function renderCityChainSequence(container, entry, fallbackMessage) {
       createSpan('בעיר', 'chain-relation-label'),
       createSpan(fromName, 'chain-relation-city from'),
       createSpan('יש רחוב בשם', 'chain-relation-label'),
-      createSpan('<-', 'chain-relation-arrow'),
       createSpan(toName, 'chain-relation-city to')
     );
 
@@ -3282,7 +3273,7 @@ function renderCityHonorGraph(force = false) {
     return `${d.name || d.id}\nמנציחה ${honorsOut} ערים (${streetOut} שמות רחובות)\nמונצחת ב-${honorsIn} ערים (${streetIn} שמות)${statusText}`;
   });
 
-  let setHighlight = () => {};
+  let setHighlight = () => { };
   const emptyNeighborSet = new Set();
   let activeHighlightId = '';
   let dragActive = false;

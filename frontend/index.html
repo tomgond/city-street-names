@@ -1,210 +1,208 @@
 <!doctype html>
 <html lang="he" dir="rtl">
-  <head>
-    <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <link rel="icon" type="image/png" href="/favicon.png" />
-    <title>מפת הדמיון בין רחובות בישראל</title>
-    <!-- Google tag (gtag.js) -->
-    <script async src="https://www.googletagmanager.com/gtag/js?id=G-L41D4QFEFT"></script>
-    <script>
-      window.dataLayer = window.dataLayer || [];
-      function gtag() {
-        dataLayer.push(arguments);
-      }
-      gtag('js', new Date());
 
-      gtag('config', 'G-L41D4QFEFT');
-    </script>
-  </head>
-  <body>
-    <div id="app" class="app-shell">
-      <header class="app-header">
-        <div class="brand">
-          <h1>מפת הדמיון בין רחובות</h1>
-          <p>השוואת ערים, חיפוש רחובות ומיפוי קשרים על בסיס שמות הרחובות</p>
-        </div>
-      </header>
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <link rel="icon" type="image/png" href="/favicon.png" />
+  <title>מפת הדמיון בין רחובות בישראל</title>
+  <!-- Google tag (gtag.js) -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=G-L41D4QFEFT"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag() {
+      dataLayer.push(arguments);
+    }
+    gtag('js', new Date());
 
-      <div class="app-body">
-        <aside class="app-nav-pane">
-          <nav class="pane-nav">
-            <a href="#/home" data-view="home" class="nav-link active">סקירה כללית</a>
-            <a href="#/city" data-view="city" class="nav-link">מבט עיר</a>
-            <a href="#/street" data-view="street" class="nav-link">מבט רחוב</a>
-            <a href="#/dedications" data-view="dedications" class="nav-link">שרשראות ערים</a>
-            <a href="#/graph" data-view="graph" class="nav-link">רשת הדמיון</a>
-          </nav>
-        </aside>
+    gtag('config', 'G-L41D4QFEFT');
+  </script>
+</head>
 
-        <main class="app-main">
-          <section id="home-view" class="view" data-view="home">
-            <div class="intro-card card">
-              <h2>לוח הבקרה הארצי</h2>
-              <p>
-                המערכת מחברת שמות רחובות מכלל הערים בישראל ומחשבת ביניהן מדדי דמיון. בלוח זה תמצאו
-                הצצה לרשת הדמיון ורשימות של ערים בולטות.
-              </p>
-            </div>
-            <div class="viz-layout">
-              <section class="viz-card card">
-                <div class="viz-header">
-                  <h3>רשת הדמיון (תצוגת תצוגה מקדימה)</h3>
-                  <p>לחצו על "רשת הדמיון" בלוח הניווט כדי לעבור למסך מלא.</p>
-                </div>
-                <div id="network-preview" class="viz-canvas network preview"></div>
-              </section>
-            </div>
-            <section class="card top-cities" id="top-cities-panel">
-              <h3>ערים בולטות לפי מספר רחובות</h3>
-              <ul id="top-cities-list" class="top-cities-list"></ul>
-            </section>
+<body>
+  <div id="app" class="app-shell">
+    <header class="app-header">
+      <div class="brand">
+        <h1>מפת הדמיון בין רחובות</h1>
+        <p>השוואת ערים, חיפוש רחובות ומיפוי קשרים על בסיס שמות הרחובות</p>
+      </div>
+    </header>
 
-            <section class="card top-cities" id="distinctive-cities-panel">
-              <h3>הערים עם השמות הייחודיים ביותר</h3>
-              <p class="hint">הדירוג מחושב לפי חלק הרחובות שאינם מופיעים בערים אחרות, כשהתיקון מתבסס על משקלי נדירות.</p>
-              <ol id="distinctive-cities-list" class="top-cities-list distinctive-list"></ol>
-            </section>
-          </section>
+    <div class="app-body">
+      <aside class="app-nav-pane">
+        <nav class="pane-nav">
+          <a href="#/home" data-view="home" class="nav-link active">סקירה כללית</a>
+          <a href="#/city" data-view="city" class="nav-link">מבט עיר</a>
+          <a href="#/street" data-view="street" class="nav-link">מבט רחוב</a>
+          <a href="#/dedications" data-view="dedications" class="nav-link">שרשראות ערים</a>
+          <a href="#/graph" data-view="graph" class="nav-link">רשת הדמיון</a>
+        </nav>
+      </aside>
 
-          <section id="city-view" class="view" data-view="city" hidden>
-            <div class="card form-card">
-              <div class="selectors city-autocomplete">
-                <label for="city-select-primary">בחרו עיר לניתוח</label>
-                <div class="autocomplete">
-                  <input id="city-select-primary" type="search" placeholder="הקלידו שם עיר" autocomplete="off" />
-                  <div id="city-primary-suggestions" class="autocomplete-suggestions" hidden></div>
-                </div>
-              </div>
-              <div class="selectors city-autocomplete">
-                <label for="city-select-secondary">השוו לעיר נוספת (אופציונלי)</label>
-                <div class="autocomplete">
-                  <input id="city-select-secondary" type="search" placeholder="הקלידו עיר להשוואה" autocomplete="off" />
-                  <div id="city-secondary-suggestions" class="autocomplete-suggestions" hidden></div>
-                </div>
-              </div>
-            </div>
-
-            <section class="card" id="city-summary"></section>
-
-            <div class="viz-layout city-layout">
-              <section class="viz-card card">
-                <div class="viz-header">
-                  <h3>10 הערים הדומות ביותר</h3>
-                  <p>הדמיון מחושב באמצעות Jaccard משוקלל – מעניק עדיפות לשמות רחובות נדירים.</p>
-                </div>
-                <div id="city-similarity-chart" class="viz-canvas bars"></div>
-              </section>
-              <section class="viz-card card">
-                <div class="viz-header">
-                  <h3>רחובות משותפים מובילים</h3>
-                  <p>בחרו עיר מהרשימה כדי לקבל את הרחובות המשמעותיים המשותפים.</p>
-                </div>
-                <div id="city-similar-list" class="similar-cities"></div>
-                <div id="shared-streets" class="shared-streets"></div>
-              </section>
-            </div>
-
-            <section class="card overlap-card">
-              <h3>רשימת חפיפה מלאה</h3>
-              <div id="city-overlap-list" class="overlap-list"></div>
-            </section>
-          </section>
-
-          <section id="street-view" class="view" data-view="street" hidden>
-            <div class="card form-card street-search">
-              <label for="street-search">חיפוש רחובות</label>
-              <div class="search-group">
-                <input id="street-search" type="search" placeholder="הקלידו שם רחוב בעברית" />
-                <button id="street-search-btn" type="button">חיפוש</button>
-                <button id="street-search-clear" type="button" class="button-secondary" aria-label="ניקוי החיפוש">ניקוי</button>
-              </div>
-              <p class="hint">ניתן להזין שם חלקי – החיפוש מתבצע באופן מטושטש באמצעות Fuse.js. לחיצה על "ניקוי" מחזירה את הרשימה המלאה.</p>
-            </div>
-            <section class="card street-directory" id="street-directory"></section>
-            <section class="card" id="street-details"></section>
-          </section>
-
-          <section id="graph-view" class="view" data-view="graph" hidden>
-            <section class="card">
-              <div class="viz-header">
-                <h2>רשת הדמיון – תצוגה מלאה</h2>
-                <p>תצוגה מפורטת של קשרי הדמיון בין הערים. ניתן לגרור צמתים, לבחור ערים למעבר מהיר ולשנות את מדד החיבור (Jaccard משוקלל או רגיל) בעזרת הבורר.</p>
-              </div>
-              <div class="graph-controls">
-                <label for="graph-layout-select">פריסת גרף</label>
-                <select id="graph-layout-select">
-                  <option value="force">פריסה דינמית</option>
-                  <option value="community">אשכולות קהילה</option>
-                </select>
-                <label for="graph-metric-select">מדד דמיון</label>
-                <select id="graph-metric-select">
-                  <option value="weightedJaccard">Jaccard משוקלל</option>
-                  <option value="jaccard">Jaccard רגיל</option>
-                </select>
-                <div class="graph-focus control-block city-autocomplete">
-                  <label for="graph-focus-city">מיקוד הגרף סביב עיר</label>
-                  <div class="graph-focus-row">
-                    <div class="autocomplete">
-                      <input
-                        id="graph-focus-city"
-                        type="search"
-                        placeholder="חפשו עיר למיקוד גרף הדמיון"
-                        autocomplete="off"
-                      />
-                      <div id="graph-focus-suggestions" class="autocomplete-suggestions" hidden></div>
-                    </div>
-                    <button id="graph-focus-clear" type="button" class="graph-focus-clear" hidden>
-                      איפוס
-                    </button>
-                  </div>
-                </div>
-              </div>
-              <div id="graph-view-canvas" class="viz-canvas network full"></div>
-              <div id="graph-community-legend" class="graph-community-legend">
-                <p class="legend-note">טוען רשימת רחובות ייחודיים לקהילות…</p>
-              </div>
-            </section>
-          </section>
-
-          <section id="dedications-view" class="view" data-view="dedications" hidden>
-            <div class="card chain-intro">
-              <h2>רשת הערים המונצחות ברחובות</h2>
-              <p>
-                בכל פעם שעיר מעניקה שם של עיר אחרת לרחוב, נוצר חיבור ביניהן. הסעיף הבא מציג גרף שבו קשת מעיר מקור לעיר היעד מציינת שיש ברחובותיה רחוב עם שם של העיר השנייה.
-              </p>
-            </div>
-
-            <section class="card chain-summary" id="city-chain-summary"></section>
-
+      <main class="app-main">
+        <section id="home-view" class="view" data-view="home">
+          <div class="intro-card card">
+            <h2>לוח הבקרה הארצי</h2>
+            <p>
+              המערכת מחברת שמות רחובות מכלל הערים בישראל ומחשבת ביניהן מדדי דמיון. בלוח זה תמצאו
+              הצצה לרשת הדמיון ורשימות של ערים בולטות.
+            </p>
+          </div>
+          <div class="viz-layout">
             <section class="viz-card card">
               <div class="viz-header">
-                <h3>גרף ההנצחות בין ערים</h3>
-                <p>הקשתות המוארות מדגישות את המסלול הארוך ביותר ואת המעגל הארוך ביותר שנמצאו.</p>
+                <h3>רשת הדמיון (תצוגת תצוגה מקדימה)</h3>
+                <p>לחצו על "רשת הדמיון" בלוח הניווט כדי לעבור למסך מלא.</p>
               </div>
-              <div id="city-chain-graph" class="viz-canvas network chain"></div>
+              <div id="network-preview" class="viz-canvas network preview"></div>
             </section>
+          </div>
+          <section class="card top-cities" id="top-cities-panel">
+            <h3>ערים בולטות לפי מספר רחובות</h3>
+            <ul id="top-cities-list" class="top-cities-list"></ul>
+          </section>
 
-            <div class="chain-stats-grid">
-              <section class="card chain-path">
-                <h3>המסלול הארוך ביותר</h3>
-                <div id="city-chain-path" class="chain-sequence"></div>
-              </section>
-              <section class="card chain-cycle">
-                <h3>המעגל הארוך ביותר</h3>
-                <div id="city-chain-cycle" class="chain-sequence"></div>
-              </section>
+          <section class="card top-cities" id="distinctive-cities-panel">
+            <h3>הערים עם השמות הייחודיים ביותר</h3>
+            <p class="hint">הדירוג מחושב לפי חלק הרחובות שאינם מופיעים בערים אחרות, כשהתיקון מתבסס על משקלי נדירות.</p>
+            <ol id="distinctive-cities-list" class="top-cities-list distinctive-list"></ol>
+          </section>
+        </section>
+
+        <section id="city-view" class="view" data-view="city" hidden>
+          <div class="card form-card">
+            <div class="selectors city-autocomplete">
+              <label for="city-select-primary">בחרו עיר לניתוח</label>
+              <div class="autocomplete">
+                <input id="city-select-primary" type="search" placeholder="הקלידו שם עיר" autocomplete="off" />
+                <div id="city-primary-suggestions" class="autocomplete-suggestions" hidden></div>
+              </div>
+            </div>
+            <div class="selectors city-autocomplete">
+              <label for="city-select-secondary">השוו לעיר נוספת (אופציונלי)</label>
+              <div class="autocomplete">
+                <input id="city-select-secondary" type="search" placeholder="הקלידו עיר להשוואה" autocomplete="off" />
+                <div id="city-secondary-suggestions" class="autocomplete-suggestions" hidden></div>
+              </div>
+            </div>
+          </div>
+
+          <section class="card" id="city-summary"></section>
+
+          <div class="viz-layout city-layout">
+            <section class="viz-card card">
+              <div class="viz-header">
+                <h3>10 הערים הדומות ביותר</h3>
+                <p>הדמיון מחושב באמצעות Jaccard משוקלל – מעניק עדיפות לשמות רחובות נדירים.</p>
+              </div>
+              <div id="city-similarity-chart" class="viz-canvas bars"></div>
+            </section>
+            <section class="viz-card card">
+              <div class="viz-header">
+                <h3>רחובות משותפים מובילים</h3>
+                <p>בחרו עיר מהרשימה כדי לקבל את הרחובות המשמעותיים המשותפים.</p>
+              </div>
+              <div id="city-similar-list" class="similar-cities"></div>
+              <div id="shared-streets" class="shared-streets"></div>
+            </section>
+          </div>
+
+          <section class="card overlap-card">
+            <h3>רשימת חפיפה מלאה</h3>
+            <div id="city-overlap-list" class="overlap-list"></div>
+          </section>
+        </section>
+
+        <section id="street-view" class="view" data-view="street" hidden>
+          <div class="card form-card street-search">
+            <label for="street-search">חיפוש רחובות</label>
+            <div class="search-group">
+              <input id="street-search" type="search" placeholder="הקלידו שם רחוב בעברית" />
+              <button id="street-search-btn" type="button">חיפוש</button>
+              <button id="street-search-clear" type="button" class="button-secondary"
+                aria-label="ניקוי החיפוש">ניקוי</button>
+            </div>
+            <p class="hint">ניתן להזין שם חלקי</p>
+          </div>
+          <section class="card street-directory" id="street-directory"></section>
+          <section class="card" id="street-details"></section>
+        </section>
+
+        <section id="graph-view" class="view" data-view="graph" hidden>
+          <section class="card">
+            <div class="viz-header">
+              <h2>רשת הדמיון – תצוגה מלאה</h2>
+              <p>תצוגה מפורטת של קשרי הדמיון בין הערים. ניתן לגרור צמתים, לבחור ערים למעבר מהיר ולשנות את מדד החיבור
+                (Jaccard משוקלל או רגיל) בעזרת הבורר.</p>
+            </div>
+            <div class="graph-controls">
+              <label for="graph-layout-select">פריסת גרף</label>
+              <select id="graph-layout-select">
+                <option value="force">פריסה דינמית</option>
+                <option value="community">אשכולות קהילה</option>
+              </select>
+              <label for="graph-metric-select">מדד דמיון</label>
+              <select id="graph-metric-select">
+                <option value="weightedJaccard">Jaccard משוקלל</option>
+                <option value="jaccard">Jaccard רגיל</option>
+              </select>
+              <div class="graph-focus control-block city-autocomplete">
+                <label for="graph-focus-city">מיקוד הגרף סביב עיר</label>
+                <div class="graph-focus-row">
+                  <div class="autocomplete">
+                    <input id="graph-focus-city" type="search" placeholder="חפשו עיר למיקוד גרף הדמיון"
+                      autocomplete="off" />
+                    <div id="graph-focus-suggestions" class="autocomplete-suggestions" hidden></div>
+                  </div>
+                  <button id="graph-focus-clear" type="button" class="graph-focus-clear" hidden>
+                    איפוס
+                  </button>
+                </div>
+              </div>
+            </div>
+            <div id="graph-view-canvas" class="viz-canvas network full"></div>
+            <div id="graph-community-legend" class="graph-community-legend">
+              <p class="legend-note">טוען רשימת רחובות ייחודיים לקהילות…</p>
             </div>
           </section>
-        </main>
-      </div>
+        </section>
 
-      <footer class="app-footer">
-        <p>הנתונים עובדו מקומית ב-Python ומוגשים כאתר סטטי באמצעות Vite. מפות באדיבות OpenStreetMap.</p>
-      </footer>
+        <section id="dedications-view" class="view" data-view="dedications" hidden>
+          <div class="card chain-intro">
+            <h2>רשת הערים המונצחות ברחובות</h2>
+            <p>
+              בכל פעם שעיר מעניקה שם של עיר אחרת לרחוב, נוצר חיבור ביניהן. הסעיף הבא מציג גרף שבו קשת מעיר מקור לעיר
+              היעד מציינת שיש ברחובותיה רחוב עם שם של העיר השנייה.
+            </p>
+          </div>
+
+          <section class="card chain-summary" id="city-chain-summary"></section>
+
+          <section class="viz-card card">
+            <div class="viz-header">
+              <h3>גרף ההנצחות בין ערים</h3>
+              <p>הקשתות המוארות מדגישות את המסלול הארוך ביותר ואת המעגל הארוך ביותר שנמצאו.</p>
+            </div>
+            <div id="city-chain-graph" class="viz-canvas network chain"></div>
+          </section>
+
+          <div class="chain-stats-grid">
+            <section class="card chain-path">
+              <h3>המסלול הארוך ביותר</h3>
+              <div id="city-chain-path" class="chain-sequence"></div>
+            </section>
+            <section class="card chain-cycle">
+              <h3>המעגל הארוך ביותר</h3>
+              <div id="city-chain-cycle" class="chain-sequence"></div>
+            </section>
+          </div>
+        </section>
+      </main>
     </div>
+  </div>
 
-    <div id="global-toast" class="toast" hidden></div>
-    <script type="module" src="/src/main.js"></script>
-  </body>
+  <div id="global-toast" class="toast" hidden></div>
+  <script type="module" src="/src/main.js"></script>
+</body>
+
 </html>
